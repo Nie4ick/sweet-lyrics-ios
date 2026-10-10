@@ -1,9 +1,9 @@
 # Spicy Lyrics for iOS (Unofficial Port)
 
-> **VERY EARLY VERSION — experimental and under active development.**
-> This project is at a very early stage. Expect bugs, incomplete features, rough edges,
-> and breaking changes. It is not ready for everyday use. Reliable builds and playback
-> behavior are not guaranteed yet.
+> **Usable, but still rough.**
+> Past the first prototype: the app installs, follows Spotify, and shows word-synced lyrics
+> day to day. It is still raw, though. Expect bugs, rough edges, missing polish and settings
+> that change between versions. Please report what breaks.
 
 A standalone iOS app that displays **word-by-word synchronized lyrics** for songs playing
 on Spotify. It ports the [Spicy Lyrics](https://github.com/Spikerko/spicy-lyrics)
@@ -12,7 +12,7 @@ Spicetify extension, taking inspiration from the Android app
 
 ## Ported Features
 
-These features are implemented in the prototype and still need testing and refinement.
+These features work, but still need testing and refinement.
 
 | Feature | iOS implementation |
 | --- | --- |
@@ -130,7 +130,7 @@ SpicyLyrics/
 
 ## Current Limitations
 
-- **Very early prototype:** features, UI, and integrations may be incomplete or unstable.
+- **Still raw:** expect bugs and rough edges; features, UI, and integrations may change between versions.
 - Spotify polling runs while the app is open; continuous background polling is not supported.
 - Playback controls require Spotify Premium.
 - Lyric translations, Genius integration, and local TTML files are not supported in this version.
