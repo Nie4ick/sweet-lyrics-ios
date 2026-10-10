@@ -33,22 +33,36 @@ These features work, but still need testing and refinement.
 The app connects through the official **Spotify Web API**:
 
 - OAuth sign-in using Authorization Code + PKCE, without a client secret.
-- Requests to `/me/player` once per second while the app is open. Between requests,
-  playback position is estimated locally; small differences are blended in gradually
-  (median of recent polls) so words never jump backwards, and a position that stops moving
-  is treated as paused even if Spotify still reports `is_playing`.
+- Requests to `/me/player` every 2 seconds while playing (sooner near the end of a track and
+  right after a button press). Between requests, playback position is estimated locally; small
+  differences are blended in gradually (median of recent polls) so words never jump backwards,
+  and a position that stops moving is treated as paused even if Spotify still reports `is_playing`.
 - Transient connection failures (TLS handshake errors, dropped VPN connections) are retried
   on a fresh connection.
 - Play/pause, next/previous, and seeking through the Web API; these controls require
   **Spotify Premium**.
 
-For the current prototype, set up your own Spotify developer app:
+### Who can sign in
 
-1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and select **Create app**.
-2. Add the redirect URI `spicylyrics-ios://callback`.
-3. Select **Web API** under “Which API/SDKs are you planning to use”.
-4. Add your Spotify account email under **User Management** for development access.
-5. Copy the **Client ID** and enter it on the app's onboarding screen.
+Spotify keeps every developer app in **Development Mode** unless the developer is an
+organization with 250,000+ monthly users, and a Development Mode app accepts at most
+**5 allowlisted accounts**; the app owner also needs Premium. The same applies to the iOS SDK.
+So the Client ID built into releases covers its owner and up to four friends. Everyone else
+signs in with **their own Client ID**; the app walks them through it
+(*Onboarding → Подключить свой Client ID*, or *Settings → Spotify*):
+
+1. You need **Spotify Premium** (Spotify requires it from the owner of a developer app).
+2. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), sign in with
+   your Spotify account and accept the terms.
+3. **Create app**: any name and description, website empty, redirect URI
+   `spicylyrics-ios://callback` (press **Add**), tick **Web API**, accept, **Save**.
+4. **Settings → User Management → Add new user** with your Spotify account's email
+   (up to five people can share your Client ID this way).
+5. **Basic Information → Client ID**: copy it (not the client secret) and paste it into the app.
+
+If an account that isn't on the built-in allowlist signs in, Spotify answers 403; the app then
+explains the limit and offers the guide. A shared-quota 429 (`QUOTA_EXCEEDED`) is reported the
+same way.
 
 ## Lyrics Source: Spicy Lyrics Key
 

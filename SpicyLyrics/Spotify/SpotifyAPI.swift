@@ -52,6 +52,10 @@ enum SpotifyAPIError: LocalizedError {
     case premiumRequired
     case noActiveDevice
     case rateLimited(retryAfter: Double)
+    /// The shared quota of the Client ID ran out (HTTP 429 `QUOTA_EXCEEDED`).
+    case quotaExceeded(retryAfter: Double)
+    /// The account isn't on the Client ID's allowlist (Development Mode allows five users).
+    case userNotRegistered
     case missingScope
     case network(URLError)
     case http(Int, String)
@@ -61,6 +65,10 @@ enum SpotifyAPIError: LocalizedError {
         case .premiumRequired: return "Управление воспроизведением через Web API доступно только с Spotify Premium."
         case .noActiveDevice: return "Нет активного устройства Spotify. Включите музыку в приложении Spotify."
         case .rateLimited: return "Spotify временно ограничил запросы, повторим позже."
+        case .quotaExceeded:
+            return "У этого Client ID закончился лимит запросов Spotify. Подождите немного или подключите свой Client ID в настройках."
+        case .userNotRegistered:
+            return "Этот аккаунт Spotify не добавлен во встроенный доступ: Spotify пускает в него только 5 человек. Подключите свой Client ID, это бесплатно и занимает 5 минут."
         case .missingScope: return "Нужно заново войти в Spotify, чтобы выдать приложению новое разрешение."
         case .network(let error):
             switch error.code {
@@ -247,6 +255,9 @@ final class SpotifyAPI {
         switch status {
         case 403 where message.lowercased().contains("premium") || error?.reason == "PREMIUM_REQUIRED":
             throw SpotifyAPIError.premiumRequired
+        // "Check settings on developer.spotify.com/dashboard, the user may not be registered."
+        case 403 where message.lowercased().contains("registered") || message.lowercased().contains("dashboard"):
+            throw SpotifyAPIError.userNotRegistered
         case 404 where error?.reason == "NO_ACTIVE_DEVICE" || message.lowercased().contains("device"):
             throw SpotifyAPIError.noActiveDevice
         default: throw SpotifyAPIError.http(status, message)
@@ -275,6 +286,8 @@ final class SpotifyAPI {
         }
         if status == 429 {
             let retryAfter = Double(http?.value(forHTTPHeaderField: "Retry-After") ?? "") ?? 5
+            let reason = (try? JSONDecoder().decode(ErrorPayload.self, from: data))?.error.reason
+            if reason == "QUOTA_EXCEEDED" { throw SpotifyAPIError.quotaExceeded(retryAfter: max(retryAfter, 30)) }
             throw SpotifyAPIError.rateLimited(retryAfter: retryAfter)
         }
         return (data, status)

@@ -26,6 +26,14 @@ final class PlayerModel {
     private(set) var lyricsRevision = 0
     private(set) var lyricsState: LyricsState = .idle
     private(set) var statusMessage: String?
+
+    enum AccessProblem: Equatable {
+        /// The account isn't on the Client ID's allowlist.
+        case notRegistered
+        case quotaExceeded
+    }
+    /// Why Spotify refuses this account, when the fix is the user's own Client ID.
+    private(set) var accessProblem: AccessProblem?
     /// Album / playlist Spotify is playing from, used to keep context when picking a track.
     private(set) var contextURI: String?
     private(set) var deviceName: String?
@@ -194,10 +202,20 @@ final class PlayerModel {
         if now < backoffUntil { return backoffUntil - now }
         do {
             apply(try await api.playbackState())
-            return isPlaying ? 1.0 : 1.5
+            accessProblem = nil
+            return nextPollInterval()
         } catch SpotifyAPIError.rateLimited(let retryAfter) {
             backoffUntil = now + retryAfter
             return retryAfter
+        } catch SpotifyAPIError.quotaExceeded(let retryAfter) {
+            accessProblem = .quotaExceeded
+            statusMessage = SpotifyAPIError.quotaExceeded(retryAfter: retryAfter).errorDescription
+            backoffUntil = now + retryAfter
+            return retryAfter
+        } catch SpotifyAPIError.userNotRegistered {
+            accessProblem = .notRegistered
+            statusMessage = SpotifyAPIError.userNotRegistered.errorDescription
+            return 15
         } catch SpotifyAuthError.notLoggedIn {
             statusMessage = SpotifyAuthError.notLoggedIn.errorDescription
             return 5
@@ -207,6 +225,18 @@ final class PlayerModel {
             statusMessage = error.localizedDescription
             return 4
         }
+    }
+
+    /// The local clock carries the position between polls, so Spotify is asked every 2 s while
+    /// playing (the quota is shared by everyone on a Client ID) and sooner near the end of a track,
+    /// so the next song is picked up promptly.
+    private func nextPollInterval() -> Double {
+        guard isPlaying else { return 3 }
+        if let duration = track?.duration, duration > 0 {
+            let remaining = duration - playbackPosition()
+            if remaining > 0, remaining < 2 { return max(0.5, remaining + 0.3) }
+        }
+        return 2
     }
 
     func refreshNow() {

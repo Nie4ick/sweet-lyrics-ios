@@ -7,7 +7,10 @@ import Observation
 final class AppSettings {
     private let defaults: UserDefaults
 
+    /// The user's own Client ID (from their own Spotify developer app).
     var spotifyClientID: String { didSet { defaults.set(spotifyClientID, forKey: Keys.clientID) } }
+    /// Use `spotifyClientID` instead of the built-in one (whose allowlist holds only five people).
+    var useOwnClientID: Bool { didSet { defaults.set(useOwnClientID, forKey: Keys.useOwnClientID) } }
     var spicyLyricsKey: String { didSet { defaults.set(spicyLyricsKey, forKey: Keys.spicyKey) } }
     /// Shifts lyrics against the playback clock, in milliseconds. Positive = lyrics earlier.
     var timingOffsetMs: Double { didSet { defaults.set(timingOffsetMs, forKey: Keys.offset) } }
@@ -41,12 +44,14 @@ final class AppSettings {
             Keys.lrclib: true,
             Keys.keepScreenOn: true,
             Keys.autoHide: true,
+            Keys.useOwnClientID: false,
             Keys.landscapeArtwork: true,
             Keys.powerSaving: false,
             Keys.landscapeTitle: true,
         ])
         spotifyClientID = defaults.string(forKey: Keys.clientID) ?? ""
         spicyLyricsKey = defaults.string(forKey: Keys.spicyKey) ?? ""
+        useOwnClientID = defaults.bool(forKey: Keys.useOwnClientID)
         timingOffsetMs = defaults.double(forKey: Keys.offset)
         fontSize = defaults.double(forKey: Keys.fontSize)
         blurInactiveLines = defaults.bool(forKey: Keys.blur)
@@ -60,9 +65,18 @@ final class AppSettings {
         landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
 
-    /// The Client ID built into the app, else the one typed in settings.
+    /// The built-in Client ID, unless the user switched to their own (or none is built in).
     var effectiveSpotifyClientID: String {
-        bundledSpotifyClientID ?? spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if usingBundledClientID, let bundled = bundledSpotifyClientID { return bundled }
+        return spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var usingBundledClientID: Bool { bundledSpotifyClientID != nil && !useOwnClientID }
+
+    /// A Spotify Client ID is 32 hex characters.
+    static func isValidClientID(_ raw: String) -> Bool {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.count == 32 && value.allSatisfy(\.isHexDigit)
     }
 
     var hasBundledSpotifyClientID: Bool { bundledSpotifyClientID != nil }
@@ -82,6 +96,7 @@ final class AppSettings {
 
     private enum Keys {
         static let clientID = "spotifyClientID"
+        static let useOwnClientID = "useOwnClientID"
         static let spicyKey = "spicyLyricsKey"
         static let offset = "timingOffsetMs"
         static let fontSize = "fontSize"
