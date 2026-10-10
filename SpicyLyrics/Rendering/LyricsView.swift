@@ -39,7 +39,7 @@ struct LyricsView: View {
         self.fontScale = fontScale
         self.onInteraction = onInteraction
         self.onBackgroundTap = onBackgroundTap
-        _animator = State(initialValue: LyricsAnimator(lyrics: lyrics))
+        _animator = State(initialValue: LyricsAnimator(lyrics: lyrics, simple: settings.simpleLyricsMode))
     }
 
     /// Always the animator's copy, so line indices and visuals can never disagree.
@@ -50,7 +50,10 @@ struct LyricsView: View {
             fontSize: clamp(CGFloat(settings.fontSize) * pinchScale, AppSettings.fontRange.lowerBound,
                             AppSettings.fontRange.upperBound) * fontScale,
             cqw: max(width, 1) / 100,
-            hasDuets: shown.lines.contains(where: \.oppositeAligned)
+            hasDuets: shown.lines.contains(where: \.oppositeAligned),
+            simple: settings.simpleLyricsMode,
+            centered: settings.centerLyrics,
+            font: LyricsFont(rawValue: settings.lyricsFont) ?? .standard
         )
     }
 
@@ -86,7 +89,9 @@ struct LyricsView: View {
 
                         LazyVStack(alignment: .leading, spacing: typography.lineSpacing) {
                             ForEach(shown.lines) { line in
-                                LyricLineView(line: line, visual: visuals[line.id], typography: typography)
+                                LyricLineView(line: line, visual: visuals[line.id], typography: typography,
+                                              translation: settings.translateLyrics && !line.isBackground
+                                                  ? player.translations[line.sourceText] : nil)
                                     .equatable()
                                     .contentShape(Rectangle())
                                     .onTapGesture {

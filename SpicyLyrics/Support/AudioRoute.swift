@@ -3,11 +3,11 @@ import AVFoundation
 /// The delay between Spotify's playback position and what reaches the ears on this iPhone's
 /// current audio output (AirPods and other Bluetooth headphones add ~150–250 ms).
 enum AudioRoute {
-    /// An ambient, mixable session: it never interrupts Spotify, but lets iOS report the
-    /// latency of the current route.
+    /// A playback session that mixes with others: it never interrupts Spotify, lets iOS report
+    /// the latency of the current route, and is what Picture in Picture requires.
     static func prepare() {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.ambient, options: [.mixWithOthers])
+        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? session.setActive(true)
     }
 

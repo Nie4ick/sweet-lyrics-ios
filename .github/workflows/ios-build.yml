@@ -214,6 +214,20 @@ jobs:
           gh release create "$TAG" SpicyLyrics-*-unsigned.ipa "${args[@]}"
           echo "Published [$TAG](https://github.com/$GH_REPO/releases/tag/$TAG) (build $BUILD)" >> "$GITHUB_STEP_SUMMARY"
 
+      # AltStore / SideStore source, attached to every stable release so its URL stays
+      # .../releases/latest/download/altstore-source.json
+      - uses: actions/checkout@v4
+        if: needs.version.outputs.channel == 'release'
+        with:
+          path: repo
+
+      - name: Publish AltStore source
+        if: needs.version.outputs.channel == 'release'
+        run: |
+          set -euo pipefail
+          bash repo/scripts/altstore-source.sh altstore-source.json
+          gh release upload "$TAG" altstore-source.json --clobber
+
       - name: Prune old alphas
         if: needs.version.outputs.channel == 'alpha'
         run: |

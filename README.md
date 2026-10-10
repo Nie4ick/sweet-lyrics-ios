@@ -31,6 +31,9 @@ These features work, but still need testing and refinement.
 | Apple Music style player | Controls fade away while a song plays; landscape and iPad put artwork and controls beside the lyrics |
 | Gestures | Swipe the lyrics sideways to change tracks, pinch to resize, long-press a line to seek / copy / share (iOS 18+) |
 | iPad | Side-by-side layout in both orientations, larger lyrics, pointer hover, keyboard shortcuts (space, ⌘← / ⌘→) |
+| Floating lyrics (Picture in Picture) | The current line, word by word, in a PiP window over any app; starts from *•••* or when leaving the app; play/pause and ±15 s from the window |
+| Romanization and translation | On-device: Japanese (with kanji readings), Chinese pinyin, Korean, Cyrillic, Greek; translation under each line with Apple Translation (iOS 18+) |
+| Display modes | Spicy Lyrics' Simple Lyrics Mode, centred lyrics, SF Pro / Rounded / New York |
 
 ## Spotify Connection
 
@@ -91,6 +94,14 @@ users skip the setup and cannot change them:
 XOR-masked, so they are not readable in `Info.plist` or the binary's strings. This only deters
 casual inspection: both are public client identifiers that the app sends over the network anyway.
 Never put a Spotify client secret or a Spicy Lyrics secret key (`sl_sk_…`) there.
+
+## Installing with AltStore or SideStore
+
+Add this source in AltStore or SideStore; new stable releases then show up as updates:
+
+```
+https://github.com/Sppqq/SpicyLyrics/releases/latest/download/altstore-source.json
+```
 
 ## Building
 

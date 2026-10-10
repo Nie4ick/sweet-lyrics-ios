@@ -7,19 +7,35 @@ struct LyricsTypography: Equatable {
     var cqw: CGFloat = 3.9
     /// The song has duet (opposite-aligned) lines.
     var hasDuets = false
+    /// Simple Lyrics Mode: softer, wider fill (`--gradient-offset: 30%`, alpha 1 → 0.3).
+    var simple = false
+    var centered = false
+    var font: LyricsFont = .standard
 
-    var leadFont: Font { .system(size: fontSize, weight: .bold) }
+    private var design: Font.Design {
+        switch font {
+        case .standard: return .default
+        case .rounded: return .rounded
+        case .serif: return .serif
+        }
+    }
+
+    var leadFont: Font { .system(size: fontSize, weight: .bold, design: design) }
+    /// Width of the lit → unlit fade, as a fraction of a glyph.
+    var fillFade: Double { simple ? 0.5 : 0.2 }
+    var leadAlpha: GradientAlpha { simple ? GradientAlpha(lit: 1, unlit: 0.3) : .lead }
     /// `.line.bg-line { --font-size: calc(var(--DefaultLyricsSize) * 0.75) }`
     var backgroundFontSize: CGFloat { fontSize * 0.75 }
-    var backgroundFont: Font { .system(size: backgroundFontSize, weight: .bold) }
+    var backgroundFont: Font { .system(size: backgroundFontSize, weight: .bold, design: design) }
     /// `.word::after { margin-right: 0.32ch }` (a "0" in the bold face is ~0.6em wide).
     func wordGap(_ size: CGFloat) -> CGFloat { size * 0.6 * 0.32 }
     /// `.line { margin: 1cqw 0 }`, collapsing between neighbours.
     var lineSpacing: CGFloat { cqw }
     /// Static lyrics: `--DefaultLyricsSize: 5cqw` against the synced 7cqw, weight 500.
-    var staticFont: Font { .system(size: fontSize * 5 / 7, weight: .medium) }
+    var staticFont: Font { .system(size: fontSize * 5 / 7, weight: .medium, design: design) }
     /// `.line { padding-right: 5cqw }`, or the 15cqw duet inset on the side a line leans away from.
     func insets(opposite: Bool) -> EdgeInsets {
+        if centered { return EdgeInsets(top: 0, leading: cqw * 5, bottom: 0, trailing: cqw * 5) }
         if hasDuets {
             return opposite ? EdgeInsets(top: 0, leading: cqw * 15, bottom: 0, trailing: 0)
                             : EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: cqw * 15)
@@ -29,6 +45,7 @@ struct LyricsTypography: Equatable {
 
     static func == (lhs: LyricsTypography, rhs: LyricsTypography) -> Bool {
         lhs.fontSize == rhs.fontSize && lhs.cqw == rhs.cqw && lhs.hasDuets == rhs.hasDuets
+            && lhs.simple == rhs.simple && lhs.centered == rhs.centered && lhs.font == rhs.font
     }
 }
 
@@ -68,13 +85,13 @@ enum GlowKind {
 }
 
 extension View {
-    /// Left-to-right fill: fully lit before `position`, unlit from `position + 0.2` on.
-    func lyricFill(_ position: Double, alpha: GradientAlpha) -> some View {
+    /// Left-to-right fill: fully lit before `position`, unlit from `position + fade` on.
+    func lyricFill(_ position: Double, alpha: GradientAlpha, fade: Double = 0.2) -> some View {
         foregroundStyle(
             LinearGradient(
                 colors: [.white.opacity(alpha.lit), .white.opacity(alpha.unlit)],
                 startPoint: UnitPoint(x: position, y: 0.5),
-                endPoint: UnitPoint(x: position + 0.2, y: 0.5)
+                endPoint: UnitPoint(x: position + fade, y: 0.5)
             )
         )
     }
@@ -96,17 +113,31 @@ struct LyricLineView: View, Equatable {
     let line: PreparedLine
     let visual: LineVisual
     let typography: LyricsTypography
+    /// On-device translation shown under the line.
+    var translation: String? = nil
 
     static func == (lhs: LyricLineView, rhs: LyricLineView) -> Bool {
         lhs.line.id == rhs.line.id && lhs.visual == rhs.visual && lhs.typography == rhs.typography
+            && lhs.translation == rhs.translation
     }
 
-    private var horizontalAlignment: HorizontalAlignment { line.oppositeAligned ? .trailing : .leading }
-    private var frameAlignment: Alignment { line.oppositeAligned ? .trailing : .leading }
-    private var textAlignment: TextAlignment { line.oppositeAligned ? .trailing : .leading }
+    private var horizontalAlignment: HorizontalAlignment {
+        typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading)
+    }
+    private var frameAlignment: Alignment { typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading) }
+    private var textAlignment: TextAlignment { typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading) }
 
     var body: some View {
-        content
+        VStack(alignment: horizontalAlignment, spacing: typography.fontSize * 0.1) {
+            content
+            if let translation, !translation.isEmpty {
+                Text(translation)
+                    .font(.system(size: typography.fontSize * 0.55, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(textAlignment)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
             .padding(typography.insets(opposite: line.oppositeAligned))
             // `.bg-line { margin: -1cqw 0 1cqw }`: tucked right under the line above.
             .padding(.top, line.isBackground ? -typography.lineSpacing : 0)
@@ -125,7 +156,7 @@ struct LyricLineView: View, Equatable {
                     WordFlowView(words: lead, visuals: visual.lead,
                                  fontSize: line.isBackground ? typography.backgroundFontSize : typography.fontSize,
                                  font: line.isBackground ? typography.backgroundFont : typography.leadFont,
-                                 alpha: line.isBackground ? .background : .lead, typography: typography,
+                                 alpha: line.isBackground ? .background : typography.leadAlpha, typography: typography,
                                  alignment: horizontalAlignment)
                 }
                 if !background.isEmpty {
@@ -139,10 +170,10 @@ struct LyricLineView: View, Equatable {
             Text(text)
                 .font(typography.leadFont)
                 .multilineTextAlignment(textAlignment)
-                .lyricFill(visual.line.gradient, alpha: .lead)
+                .lyricFill(visual.line.gradient, alpha: typography.leadAlpha, fade: typography.fillFade)
                 .lyricGlow(visual.state == .active ? visual.line.glow : 0, kind: .line)
                 // Active line-synced lines grow to 1.05 from their aligned edge.
-                .scaleEffect(visual.scale, anchor: line.oppositeAligned ? .trailing : .leading)
+                .scaleEffect(visual.scale, anchor: typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading))
 
         case .static(let text):
             Text(text)
@@ -169,26 +200,42 @@ private struct WordFlowView: View {
     let typography: LyricsTypography
     let alignment: HorizontalAlignment
 
+    /// Syllables in reading order, each knowing whether it is glued to the next (same word).
+    private var items: [FlowItem] {
+        words.indices.flatMap { w in
+            words[w].syllables.indices.map { s in
+                FlowItem(id: w * 10_000 + s, w: w, s: s, gluedToNext: s < words[w].syllables.count - 1)
+            }
+        }
+    }
+
+    private struct FlowItem: Identifiable {
+        let id: Int
+        let w: Int
+        let s: Int
+        let gluedToNext: Bool
+    }
+
     var body: some View {
         FlowLayout(alignment: alignment, spacing: typography.wordGap(fontSize), rowSpacing: 0) {
-            ForEach(words.indices, id: \.self) { w in
-                HStack(spacing: 0) {
-                    ForEach(words[w].syllables.indices, id: \.self) { s in
-                        SyllableView(
-                            syllable: words[w].syllables[s],
-                            visual: visuals.indices.contains(w) && visuals[w].indices.contains(s) ? visuals[w][s] : SyllableVisual(),
-                            fontSize: fontSize,
-                            font: font,
-                            alpha: alpha
-                        )
-                    }
-                }
+            ForEach(items) { item in
+                SyllableView(
+                    fade: typography.fillFade,
+                    syllable: words[item.w].syllables[item.s],
+                    visual: visuals.indices.contains(item.w) && visuals[item.w].indices.contains(item.s)
+                        ? visuals[item.w][item.s] : SyllableVisual(),
+                    fontSize: fontSize,
+                    font: font,
+                    alpha: alpha
+                )
+                .layoutValue(key: GluedToNext.self, value: item.gluedToNext)
             }
         }
     }
 }
 
 private struct SyllableView: View {
+    let fade: Double
     let syllable: PreparedSyllable
     let visual: SyllableVisual
     let fontSize: CGFloat
@@ -200,12 +247,12 @@ private struct SyllableView: View {
             HStack(spacing: 0) {
                 ForEach(letters.indices, id: \.self) { i in
                     GlyphView(text: letters[i].text, visual: visual.letters[i], fontSize: fontSize,
-                              font: font, alpha: alpha, glowKind: .letter)
+                              font: font, alpha: alpha, fade: fade, glowKind: .letter)
                 }
             }
         } else {
             GlyphView(text: syllable.text, visual: visual.glyph, fontSize: fontSize,
-                      font: font, alpha: alpha, glowKind: .syllable)
+                      font: font, alpha: alpha, fade: fade, glowKind: .syllable)
         }
     }
 }
@@ -216,13 +263,14 @@ private struct GlyphView: View {
     let fontSize: CGFloat
     let font: Font
     let alpha: GradientAlpha
+    let fade: Double
     let glowKind: GlowKind
 
     var body: some View {
         Text(text)
             .font(font)
             .fixedSize()
-            .lyricFill(visual.gradient, alpha: alpha)
+            .lyricFill(visual.gradient, alpha: alpha, fade: fade)
             .lyricGlow(visual.glow, kind: glowKind)
             .scaleEffect(visual.scale)
             .offset(y: visual.yOffset * fontSize)
@@ -273,38 +321,71 @@ private struct InterludeDotsView: View {
 // MARK: - Flow layout
 
 /// Wrapping row layout: places subviews left to right and starts a new row when out of width.
+/// The next item belongs to the same word: keep them on one row when the word fits.
+struct GluedToNext: LayoutValueKey {
+    static let defaultValue = false
+}
+
+/// Wrapping row layout for syllables. Words (runs of glued syllables) stay together and wrap as
+/// a unit, like text; a word wider than the whole row (Japanese and Chinese lines are often one
+/// long "word" with no spaces) breaks between its syllables instead of running off screen.
 struct FlowLayout: Layout {
     var alignment: HorizontalAlignment = .leading
     var spacing: CGFloat
     var rowSpacing: CGFloat
 
     private struct Row {
-        var indices: [Int] = []
+        var items: [(index: Int, x: CGFloat)] = []
         var width: CGFloat = 0
         var height: CGFloat = 0
+
+        mutating func append(_ index: Int, size: CGSize, gap: CGFloat) {
+            let x = items.isEmpty ? 0 : width + gap
+            items.append((index, x))
+            width = x + size.width
+            height = max(height, size.height)
+        }
     }
 
     private func arrangeRows(for subviews: Subviews, maxWidth: CGFloat) -> ([Row], [CGSize]) {
-        let sizes = subviews.map { subview -> CGSize in
-            let ideal = subview.sizeThatFits(.unspecified)
-            if ideal.width > maxWidth {
-                return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+
+        // Words: runs of glued subviews.
+        var words: [[Int]] = []
+        var current: [Int] = []
+        for index in subviews.indices {
+            current.append(index)
+            if !subviews[index][GluedToNext.self] {
+                words.append(current)
+                current = []
             }
-            return ideal
         }
+        if !current.isEmpty { words.append(current) }
+
         var rows: [Row] = []
-        var current = Row()
-        for (index, size) in sizes.enumerated() {
-            let needed = current.indices.isEmpty ? size.width : current.width + spacing + size.width
-            if needed > maxWidth, !current.indices.isEmpty {
-                rows.append(current)
-                current = Row()
-            }
-            current.width = current.indices.isEmpty ? size.width : current.width + spacing + size.width
-            current.height = max(current.height, size.height)
-            current.indices.append(index)
+        var row = Row()
+        func newRow() {
+            if !row.items.isEmpty { rows.append(row) }
+            row = Row()
         }
-        if !current.indices.isEmpty { rows.append(current) }
+
+        for word in words {
+            let wordWidth = word.reduce(0) { $0 + sizes[$1].width }
+            if wordWidth <= maxWidth {
+                if !row.items.isEmpty, row.width + spacing + wordWidth > maxWidth { newRow() }
+                for (k, index) in word.enumerated() {
+                    row.append(index, size: sizes[index], gap: k == 0 ? spacing : 0)
+                }
+            } else {
+                // Too long for any row: break between its syllables.
+                for (k, index) in word.enumerated() {
+                    let gap: CGFloat = k == 0 ? spacing : 0
+                    if !row.items.isEmpty, row.width + gap + sizes[index].width > maxWidth { newRow() }
+                    row.append(index, size: sizes[index], gap: gap)
+                }
+            }
+        }
+        newRow()
         return (rows, sizes)
     }
 
@@ -320,20 +401,19 @@ struct FlowLayout: Layout {
         let (rows, sizes) = arrangeRows(for: subviews, maxWidth: bounds.width)
         var y = bounds.minY
         for row in rows {
-            var x: CGFloat
+            let start: CGFloat
             switch alignment {
-            case .trailing: x = bounds.maxX - row.width
-            case .center: x = bounds.minX + (bounds.width - row.width) / 2
-            default: x = bounds.minX
+            case .trailing: start = bounds.maxX - row.width
+            case .center: start = bounds.minX + (bounds.width - row.width) / 2
+            default: start = bounds.minX
             }
-            for index in row.indices {
-                let size = sizes[index]
-                subviews[index].place(
-                    at: CGPoint(x: x, y: y + (row.height - size.height)),
+            for item in row.items {
+                let size = sizes[item.index]
+                subviews[item.index].place(
+                    at: CGPoint(x: start + item.x, y: y + (row.height - size.height)),
                     anchor: .topLeading,
                     proposal: ProposedViewSize(size)
                 )
-                x += size.width + spacing
             }
             y += row.height + rowSpacing
         }

@@ -8,6 +8,7 @@ struct NowPlayingView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var auth: SpotifyAuth
     @Environment(PerformanceMonitor.self) private var performance
+    @Environment(LyricsPictureInPicture.self) private var pip
     @State private var showSettings = false
     @State private var showPicker = false
     @State private var showSetupGuide = false
@@ -32,6 +33,11 @@ struct NowPlayingView: View {
             // Side by side in landscape, and on iPad in any orientation (wide enough for both).
             let landscape = (size.width > size.height && size.width > 560) || size.width >= 700
             ZStack {
+                // The PiP layer has to be in the window; it sits behind everything.
+                PictureInPictureHost(pip: pip)
+                    .frame(width: 80, height: 40)
+                    .allowsHitTesting(false)
+
                 DynamicBackground(
                     image: settings.dynamicBackground ? player.backgroundArtwork : nil,
                     imageID: player.artworkID,
@@ -99,6 +105,18 @@ struct NowPlayingView: View {
                 .presentationDragIndicator(.visible)
         }
         .onChange(of: settings.showRomanization) { _, _ in player.settingsChanged() }
+        .onChange(of: settings.simpleLyricsMode) { _, _ in player.settingsChanged() }
+        .modifier(LyricsTranslation(player: player, settings: settings))
+        .task { pip.configure(player: player, settings: settings) }
+        .onChange(of: settings.autoPictureInPicture) { _, enabled in pip.setAutomaticStart(enabled) }
+        .alert("Картинка в картинке", isPresented: Binding(
+            get: { pip.lastError != nil && !pip.isActive },
+            set: { _ in }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(pip.lastError ?? "")
+        }
         .alert("Spotify", isPresented: Binding(
             get: { player.transientError != nil },
             set: { if !$0 { player.transientError = nil } }
@@ -390,6 +408,14 @@ struct NowPlayingView: View {
                 showOwnLyrics = true
             } label: {
                 Label("Свой текст (TTML)", systemImage: "doc.text")
+            }
+            if LyricsPictureInPicture.isSupported {
+                Button {
+                    pip.isActive ? pip.stop() : pip.start()
+                } label: {
+                    Label(pip.isActive ? "Закрыть окно с текстом" : "Текст поверх приложений",
+                          systemImage: "pip.enter")
+                }
             }
             Divider()
             Button {

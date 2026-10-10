@@ -7,6 +7,7 @@ struct SpicyLyricsApp: App {
     @StateObject private var auth: SpotifyAuth
     @State private var player: PlayerModel
     @State private var performance = PerformanceMonitor()
+    @State private var pip = LyricsPictureInPicture()
 
     init() {
         AudioRoute.prepare()
@@ -26,6 +27,7 @@ struct SpicyLyricsApp: App {
                 .environment(settings)
                 .environment(player)
                 .environment(performance)
+                .environment(pip)
                 .environmentObject(auth)
                 .preferredColorScheme(.dark)
                 .tint(.white)
@@ -38,6 +40,7 @@ struct RootView: View {
     @Environment(PlayerModel.self) private var player
     @Environment(AppSettings.self) private var settings
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(LyricsPictureInPicture.self) private var pip
 
     var body: some View {
         Group {
@@ -50,11 +53,13 @@ struct RootView: View {
         .onChange(of: scenePhase, initial: true) { _, phase in updateActivity(phase) }
         .onChange(of: auth.isLoggedIn) { _, _ in updateActivity(scenePhase) }
         .onChange(of: settings.keepScreenOn) { _, _ in updateActivity(scenePhase) }
+        .onChange(of: pip.isActive) { _, _ in updateActivity(scenePhase) }
     }
 
     private func updateActivity(_ phase: ScenePhase) {
         let active = phase == .active && auth.isLoggedIn
-        if active {
+        // The floating lyrics window keeps following Spotify while the app is in the background.
+        if active || (pip.isActive && auth.isLoggedIn) {
             player.startPolling()
         } else {
             player.stopPolling()

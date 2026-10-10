@@ -24,6 +24,17 @@ final class AppSettings {
     var autoHideControls: Bool { didSet { defaults.set(autoHideControls, forKey: Keys.autoHide) } }
     /// Subtract the audio output delay (Bluetooth) when Spotify plays on this iPhone.
     var compensateOutputLatency: Bool { didSet { defaults.set(compensateOutputLatency, forKey: Keys.outputLatency) } }
+    /// Translate the lyrics on the device and show the translation under each line.
+    var translateLyrics: Bool { didSet { defaults.set(translateLyrics, forKey: Keys.translate) } }
+    var translationLanguage: String { didSet { defaults.set(translationLanguage, forKey: Keys.translationLanguage) } }
+    /// Open the floating lyrics window when leaving the app.
+    var autoPictureInPicture: Bool { didSet { defaults.set(autoPictureInPicture, forKey: Keys.autoPiP) } }
+    /// Spicy Lyrics' Simple Lyrics Mode: calmer word animation, softer fill.
+    var simpleLyricsMode: Bool { didSet { defaults.set(simpleLyricsMode, forKey: Keys.simpleMode) } }
+    /// Centre the lyrics instead of aligning them left (duets then stay centred too).
+    var centerLyrics: Bool { didSet { defaults.set(centerLyrics, forKey: Keys.centerLyrics) } }
+    /// `LyricsFont.rawValue`.
+    var lyricsFont: String { didSet { defaults.set(lyricsFont, forKey: Keys.lyricsFont) } }
     /// Swipes to change tracks and pinch to resize the lyrics.
     var gesturesEnabled: Bool { didSet { defaults.set(gesturesEnabled, forKey: Keys.gestures) } }
     /// The system volume slider under the playback buttons.
@@ -56,6 +67,12 @@ final class AppSettings {
             Keys.volumeSlider: true,
             Keys.gestures: true,
             Keys.outputLatency: true,
+            Keys.simpleMode: false,
+            Keys.autoPiP: true,
+            Keys.translate: false,
+            Keys.translationLanguage: Locale.current.language.languageCode?.identifier ?? "en",
+            Keys.centerLyrics: false,
+            Keys.lyricsFont: LyricsFont.standard.rawValue,
             Keys.landscapeTitle: true,
         ])
         spotifyClientID = defaults.string(forKey: Keys.clientID) ?? ""
@@ -73,6 +90,12 @@ final class AppSettings {
         showVolumeSlider = defaults.bool(forKey: Keys.volumeSlider)
         gesturesEnabled = defaults.bool(forKey: Keys.gestures)
         compensateOutputLatency = defaults.bool(forKey: Keys.outputLatency)
+        simpleLyricsMode = defaults.bool(forKey: Keys.simpleMode)
+        autoPictureInPicture = defaults.bool(forKey: Keys.autoPiP)
+        translateLyrics = defaults.bool(forKey: Keys.translate)
+        translationLanguage = defaults.string(forKey: Keys.translationLanguage) ?? "en"
+        centerLyrics = defaults.bool(forKey: Keys.centerLyrics)
+        lyricsFont = defaults.string(forKey: Keys.lyricsFont) ?? LyricsFont.standard.rawValue
         landscapeArtwork = defaults.bool(forKey: Keys.landscapeArtwork)
         landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
@@ -125,7 +148,28 @@ final class AppSettings {
         static let volumeSlider = "showVolumeSlider"
         static let gestures = "gesturesEnabled"
         static let outputLatency = "compensateOutputLatency"
+        static let simpleMode = "simpleLyricsMode"
+        static let autoPiP = "autoPictureInPicture"
+        static let translate = "translateLyrics"
+        static let translationLanguage = "translationLanguage"
+        static let centerLyrics = "centerLyrics"
+        static let lyricsFont = "lyricsFont"
         static let landscapeArtwork = "landscapeArtwork"
         static let landscapeTitle = "landscapeTitle"
+    }
+}
+
+/// Typeface for the lyrics.
+enum LyricsFont: String, CaseIterable, Identifiable {
+    case standard, rounded, serif
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return "SF Pro"
+        case .rounded: return "SF Pro Rounded"
+        case .serif: return "New York"
+        }
     }
 }
