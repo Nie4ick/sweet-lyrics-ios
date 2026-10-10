@@ -374,6 +374,8 @@ final class PiPFrameRenderer {
         let ranges: [NSRange]
     }
     private var textLayout: TextLayout?
+    /// Font sizes that make a line fit its box, by text, size and box.
+    private var fittedSizes: [String: CGFloat] = [:]
 
     // The animated background is drawn small (200×100, ten times a second) and stretched: it is
     // a blur, so nobody can tell, and it costs a fraction of drawing it at full size.
@@ -383,10 +385,10 @@ final class PiPFrameRenderer {
     /// drift radii and period (s), whether the layer is a soft blob.
     private static let backgroundLayers: [(size: CGFloat, center: CGPoint, rotation: Double,
                                            drift: CGSize, driftPeriod: Double, blob: Bool)] = [
-        (1.35, CGPoint(x: 0.5, y: 0.5), 140, .zero, 0, false),
-        (0.95, CGPoint(x: 0.22, y: 0.24), -90, CGSize(width: 0.1, height: 0.07), 41, true),
-        (0.85, CGPoint(x: 0.82, y: 0.68), 70, CGSize(width: 0.08, height: 0.09), 47, true),
-        (0.75, CGPoint(x: 0.3, y: 0.86), -110, CGSize(width: 0.09, height: 0.06), 53, true),
+        (1.35, CGPoint(x: 0.5, y: 0.5), 60, .zero, 0, false),
+        (0.95, CGPoint(x: 0.22, y: 0.24), -40, CGSize(width: 0.16, height: 0.12), 19, true),
+        (0.85, CGPoint(x: 0.82, y: 0.68), 32, CGSize(width: 0.14, height: 0.15), 23, true),
+        (0.75, CGPoint(x: 0.3, y: 0.86), -50, CGSize(width: 0.15, height: 0.1), 27, true),
     ]
     private var coverImages: (id: String, base: CGImage, blob: CGImage)?
     private var backgroundFrame: CGImage?
@@ -539,8 +541,16 @@ final class PiPFrameRenderer {
             let alpha: CGFloat = exists ? (old == nil ? progress : 1) : 1 - progress
             context.saveGState()
             context.setAlpha(alpha)
-            let textFont = font(32 + 12 * active, active > 0.5 ? .bold : .semibold, snapshot.fontDesign)
+            let weight: UIFont.Weight = active > 0.5 ? .bold : .semibold
             let box = CGRect(x: inset, y: rowY, width: width, height: 48 + 68 * active)
+            // Long lines get a smaller font instead of being cut off with "…". Sizes are fitted
+            // for the two slots and blended while a row moves between them.
+            let small = fittedSize(row.text, preferred: 32, weight: .semibold, design: snapshot.fontDesign,
+                                   box: CGSize(width: width, height: 48))
+            let large = fittedSize(row.text, preferred: 44, weight: .bold, design: snapshot.fontDesign,
+                                   box: CGSize(width: width, height: 116))
+            let size = (small + (large - small) * active).rounded()
+            let textFont = font(size, weight, snapshot.fontDesign)
             if row.offset == 0, exists, snapshot.interlude, !snapshot.dots.isEmpty {
                 drawDots(snapshot, in: box, context: context)
             } else if row.offset == 0, exists, !snapshot.interlude {
@@ -577,8 +587,8 @@ final class PiPFrameRenderer {
             let layout = NSLayoutManager()
             let container = NSTextContainer(size: box.size)
             container.lineFragmentPadding = 0
-            container.maximumNumberOfLines = 2
-            container.lineBreakMode = .byTruncatingTail
+            container.maximumNumberOfLines = 0
+            container.lineBreakMode = .byWordWrapping
             storage.addLayoutManager(layout)
             layout.addTextContainer(container)
             layout.ensureLayout(for: container)
@@ -658,6 +668,26 @@ final class PiPFrameRenderer {
             context.restoreGState()
         }
         context.restoreGState()
+    }
+
+    /// The largest size (down to 60% of `preferred`) at which `text` fits in `box` without truncation.
+    private func fittedSize(_ text: String, preferred: CGFloat, weight: UIFont.Weight,
+                            design: UIFontDescriptor.SystemDesign, box: CGSize) -> CGFloat {
+        let key = "\(text)|\(preferred)|\(weight.rawValue)|\(design.rawValue)|\(box.width)|\(box.height)"
+        if let cached = fittedSizes[key] { return cached }
+        if fittedSizes.count > 64 { fittedSizes.removeAll() }
+        let minimum = (preferred * 0.6).rounded()
+        var size = preferred
+        while size > minimum {
+            let height = NSAttributedString(string: text, attributes: [.font: font(size, weight, design)])
+                .boundingRect(with: CGSize(width: box.width, height: .greatestFiniteMagnitude),
+                              options: [.usesLineFragmentOrigin], context: nil).height
+            if height <= box.height { break }
+            size -= 2
+        }
+        size = max(size, minimum)
+        fittedSizes[key] = size
+        return size
     }
 
     private func font(_ size: CGFloat, _ weight: UIFont.Weight, _ design: UIFontDescriptor.SystemDesign) -> UIFont {

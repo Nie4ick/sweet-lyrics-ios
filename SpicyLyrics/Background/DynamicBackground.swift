@@ -13,13 +13,18 @@ struct DynamicBackground: View {
     let image: UIImage?
     let imageID: String
     let animated: Bool
+    /// Black layer on top, keeps white lyrics readable on bright covers.
+    var dim: Double = AppSettings.defaultBackgroundDim
+    /// × the default drift speed.
+    var speed: Double = 1
+    /// × the default cover blur.
+    var blur: Double = 1
 
     var body: some View {
         ZStack {
             Color(red: 0.07, green: 0.07, blue: 0.08)
-            CoverBlobs(image: image, imageID: imageID, animated: animated)
-            // Keeps white lyrics readable on bright covers.
-            Color.black.opacity(0.28)
+            CoverBlobs(image: image, imageID: imageID, animated: animated, speed: speed, blur: blur)
+            Color.black.opacity(dim)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -30,12 +35,15 @@ private struct CoverBlobs: UIViewRepresentable {
     let image: UIImage?
     let imageID: String
     let animated: Bool
+    let speed: Double
+    let blur: Double
 
     func makeUIView(context: Context) -> CoverBlobsView { CoverBlobsView() }
 
     func updateUIView(_ view: CoverBlobsView, context: Context) {
         view.setAnimated(animated)
-        view.setImage(image, id: image == nil ? "" : imageID)
+        view.setSpeed(speed)
+        view.setImage(image, id: image == nil ? "" : imageID, blur: blur)
     }
 }
 
@@ -51,10 +59,10 @@ final class CoverBlobsView: UIView {
     }
 
     private static let specs: [LayerSpec] = [
-        LayerSpec(size: 1.35, center: CGPoint(x: 0.5, y: 0.5), rotationPeriod: 140, drift: .zero, driftPeriod: 0, isBlob: false),
-        LayerSpec(size: 0.95, center: CGPoint(x: 0.22, y: 0.24), rotationPeriod: -90, drift: CGSize(width: 0.1, height: 0.07), driftPeriod: 41, isBlob: true),
-        LayerSpec(size: 0.85, center: CGPoint(x: 0.82, y: 0.68), rotationPeriod: 70, drift: CGSize(width: 0.08, height: 0.09), driftPeriod: 47, isBlob: true),
-        LayerSpec(size: 0.75, center: CGPoint(x: 0.3, y: 0.86), rotationPeriod: -110, drift: CGSize(width: 0.09, height: 0.06), driftPeriod: 53, isBlob: true),
+        LayerSpec(size: 1.35, center: CGPoint(x: 0.5, y: 0.5), rotationPeriod: 60, drift: .zero, driftPeriod: 0, isBlob: false),
+        LayerSpec(size: 0.95, center: CGPoint(x: 0.22, y: 0.24), rotationPeriod: -40, drift: CGSize(width: 0.16, height: 0.12), driftPeriod: 19, isBlob: true),
+        LayerSpec(size: 0.85, center: CGPoint(x: 0.82, y: 0.68), rotationPeriod: 32, drift: CGSize(width: 0.14, height: 0.15), driftPeriod: 23, isBlob: true),
+        LayerSpec(size: 0.75, center: CGPoint(x: 0.3, y: 0.86), rotationPeriod: -50, drift: CGSize(width: 0.15, height: 0.1), driftPeriod: 27, isBlob: true),
     ]
 
     private static let ciContext = CIContext(options: [.cacheIntermediates: false])
@@ -62,6 +70,9 @@ final class CoverBlobsView: UIView {
     private let container = CALayer()
     private var coverLayers: [CALayer] = []
     private var currentID: String?
+    private var speed: Double = 1
+    /// Size the running animations were built for; other layout passes leave them alone.
+    private var animatedSize: CGSize = .zero
     private var animated = true
     private var processing: Task<Void, Never>?
     private var foregroundObserver: NSObjectProtocol?
@@ -94,6 +105,9 @@ final class CoverBlobsView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        // SwiftUI lays this view out often; restarting here kept snapping the layers back to
+        // their first frame, so the background looked frozen.
+        guard bounds.size != animatedSize else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         container.frame = bounds
@@ -118,16 +132,31 @@ final class CoverBlobsView: UIView {
         restartAnimations()
     }
 
-    func setImage(_ image: UIImage?, id: String) {
-        guard id != currentID else { return }
-        currentID = id
+    /// Changes the drift speed without the layers jumping: the clock continues from where it is.
+    func setSpeed(_ value: Double) {
+        let value = max(0.1, value)
+        guard value != speed else { return }
+        speed = value
+        let now = CACurrentMediaTime()
+        let local = container.convertTime(now, from: nil)
+        container.beginTime = now
+        container.timeOffset = local
+        container.speed = Float(value)
+    }
+
+    func setImage(_ image: UIImage?, id: String, blur: Double = 1) {
+        // The blur is part of the key: changing it re-renders the cover.
+        let key = image == nil ? "" : "\(id)|\(blur)"
+        guard key != currentID else { return }
+        currentID = key
         processing?.cancel()
         guard let image else {
             apply(base: nil, blob: nil)
             return
         }
+        let id = key
         processing = Task.detached(priority: .utility) { [weak self] in
-            let rendered = CoverBlobsView.render(image)
+            let rendered = CoverBlobsView.render(image, blur: blur)
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self, self.currentID == id else { return }
@@ -150,8 +179,9 @@ final class CoverBlobsView: UIView {
 
     /// Small, saturated, pre-blurred copies: one opaque, one fading out radially for the blobs.
     /// Scaled up to fill the screen, a tiny image looks exactly like a heavy blur.
-    static func render(_ image: UIImage) -> (base: CGImage, blob: CGImage)? {
-        guard let cgImage = image.downscaled(to: 96).cgImage else { return nil }
+    static func render(_ image: UIImage, blur: Double = 1) -> (base: CGImage, blob: CGImage)? {
+        let blur = clamp(blur, 0.3, 3)
+        guard let cgImage = image.downscaled(to: CGFloat(96 / blur)).cgImage else { return nil }
         let input = CIImage(cgImage: cgImage)
         let extent = input.extent
         let colored = input.applyingFilter("CIColorControls", parameters: [
@@ -159,7 +189,7 @@ final class CoverBlobsView: UIView {
             kCIInputBrightnessKey: -0.03,
             kCIInputContrastKey: 1.05,
         ])
-        let blurred = colored.clampedToExtent().applyingGaussianBlur(sigma: 4).cropped(to: extent)
+        let blurred = colored.clampedToExtent().applyingGaussianBlur(sigma: 4 * blur).cropped(to: extent)
         guard let base = ciContext.createCGImage(blurred, from: extent) else { return nil }
 
         let radius = min(extent.width, extent.height) / 2
@@ -182,7 +212,9 @@ final class CoverBlobsView: UIView {
 
     private func restartAnimations() {
         for cover in coverLayers { cover.removeAllAnimations() }
+        animatedSize = .zero
         guard animated, window != nil, bounds.width > 0 else { return }
+        animatedSize = bounds.size
         // Slow motion looks the same at 30 fps and costs half as much.
         let frameRate = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
 
