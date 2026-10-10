@@ -17,6 +17,7 @@ struct SettingsView: View {
                     Toggle("Романизация (если есть)", isOn: $settings.showRomanization)
                     Toggle("Не гасить экран", isOn: $settings.keepScreenOn)
                     Toggle("Прятать интерфейс во время песни", isOn: $settings.autoHideControls)
+                    Toggle("Экономия батареи", isOn: $settings.powerSaving)
                     VStack(alignment: .leading) {
                         Text("Размер шрифта: \(Int(settings.fontSize))")
                         Slider(value: $settings.fontSize, in: 22...48, step: 1)

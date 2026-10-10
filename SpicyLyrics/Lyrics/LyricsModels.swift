@@ -172,12 +172,20 @@ struct PreparedLyrics: Hashable {
         lines = result
     }
 
+    /// The three dots' timing, exactly as `Applyer/Synced/Syllable.ts` lays them out: thirds of the
+    /// gap, each pulled earlier by a third of the padding, the last one ending `padding` early.
     private static func dots(from start: Double, to end: Double) -> [PreparedLetter] {
-        let usableEnd = max(start + 0.3, end - interludePadding)
-        let third = (usableEnd - start) / 3
-        return (0..<3).map { i in
-            PreparedLetter(text: "•", start: start + Double(i) * third, end: start + Double(i + 1) * third)
-        }
+        let total = end - start
+        let third = total / 3
+        let padding = interludePadding / 3
+        let dot1 = max(start, start + third - padding)
+        let dot2 = max(dot1, start + third * 2 - padding * 2)
+        let dot3 = max(dot2, start + total - interludePadding)
+        return [
+            PreparedLetter(text: "•", start: start, end: dot1),
+            PreparedLetter(text: "•", start: dot1, end: dot2),
+            PreparedLetter(text: "•", start: dot2, end: dot3),
+        ]
     }
 
     private static func words(from syllables: [LyricSyllable], romanized: Bool) -> [PreparedWord] {

@@ -10,10 +10,12 @@ struct PlaybackBar: View {
     var onInteraction: () -> Void = {}
     var onShowQueue: () -> Void = {}
     var onHideControls: () -> Void = {}
+    /// False while the controls are faded out: the scrubber stops ticking.
+    var isVisible = true
 
     var body: some View {
         VStack(spacing: 0) {
-            Scrubber(onInteraction: onInteraction)
+            Scrubber(onInteraction: onInteraction, isVisible: isVisible)
                 .padding(.bottom, 14)
 
             HStack(spacing: 0) {
@@ -77,10 +79,11 @@ struct PlaybackBar: View {
 private struct Scrubber: View {
     @Environment(PlayerModel.self) private var player
     var onInteraction: () -> Void
+    var isVisible: Bool
     @State private var dragFraction: Double?
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+        TimelineView(.animation(minimumInterval: 0.25, paused: !isVisible)) { _ in
             let duration = max(player.track?.duration ?? 0, 0.001)
             let position = player.playbackPosition(at: CACurrentMediaTime())
             let fraction = dragFraction ?? clamp(position / duration, 0, 1)

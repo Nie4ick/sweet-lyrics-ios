@@ -22,7 +22,7 @@ These features are implemented in the prototype and still need testing and refin
 | Duets and backing vocals | Right-aligned `OppositeAligned` lines and smaller backing vocals below the main line |
 | Instrumental breaks | Three animated dots during gaps of at least three seconds |
 | Line-synced and static lyrics | `Line` and `Static` lyric types |
-| Dynamic background | Blurred album artwork with a Metal distortion shader inspired by Kawarp |
+| Dynamic background | Pre-blurred, saturated album artwork drifting on Core Animation (light on battery) |
 | Lyrics sources | Spicy Lyrics API with [LRCLIB](https://lrclib.net) as a fallback |
 | Romanization | Supported when returned by the API (`TransliteratedText`) |
 | Seeking | Tap a lyric line to seek to it; requires Spotify Premium |
@@ -59,6 +59,20 @@ For the current prototype, set up your own Spotify developer app:
   following the Spicetify extension. SLObjPack responses are decoded on the device.
   The server may reject tokens from third-party apps. If that happens, the app prompts
   you to add a key and falls back to LRCLIB for line-synced lyrics.
+
+## Built-in Keys
+
+The Spotify Client ID and the Spicy Lyrics client key (`sl_pk_…`) can be built into the app, so
+users skip the setup and cannot change them:
+
+- **Locally:** copy `Config/Secrets.example.xcconfig` to `Config/Secrets.xcconfig` (git-ignored)
+  and fill it in.
+- **GitHub Actions:** add the repository secrets `SPOTIFY_CLIENT_ID` and `SPICY_LYRICS_KEY`.
+
+`scripts/generate-bundled-keys.sh` turns them into a git-ignored Swift file with the values
+XOR-masked, so they are not readable in `Info.plist` or the binary's strings. This only deters
+casual inspection: both are public client identifiers that the app sends over the network anyway.
+Never put a Spotify client secret or a Spicy Lyrics secret key (`sl_sk_…`) there.
 
 ## Building
 
@@ -110,7 +124,7 @@ SpicyLyrics/
   Spotify/      OAuth PKCE, Web API, player model, and playback clock
   Lyrics/       Models, parsers (Spicy JSON, LRC), SLObjPack, service, and disk cache
   Rendering/    Springs, splines, animator, lyric line rendering, and scrolling
-  Background/   Dynamic background and Metal shader
+  Background/   Dynamic background
   UI/           Onboarding, now playing screen, playback controls, and settings
 ```
 

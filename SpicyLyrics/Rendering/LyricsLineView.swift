@@ -1,14 +1,35 @@
 import SwiftUI
 
-/// Typography shared by all lines.
+/// Typography and spacing shared by all lines, from Spicy Lyrics' Mixed.css. `cqw` is 1% of the
+/// lyrics container's width, the unit the stylesheet sizes spacing in.
 struct LyricsTypography: Equatable {
     var fontSize: CGFloat
+    var cqw: CGFloat = 3.9
+    /// The song has duet (opposite-aligned) lines.
+    var hasDuets = false
 
     var leadFont: Font { .system(size: fontSize, weight: .bold) }
-    var backgroundFontSize: CGFloat { fontSize * 0.62 }
+    /// `.line.bg-line { --font-size: calc(var(--DefaultLyricsSize) * 0.75) }`
+    var backgroundFontSize: CGFloat { fontSize * 0.75 }
     var backgroundFont: Font { .system(size: backgroundFontSize, weight: .bold) }
-    var wordGap: CGFloat { fontSize * 0.26 }
-    var rowSpacing: CGFloat { fontSize * 0.06 }
+    /// `.word::after { margin-right: 0.32ch }` (a "0" in the bold face is ~0.6em wide).
+    func wordGap(_ size: CGFloat) -> CGFloat { size * 0.6 * 0.32 }
+    /// `.line { margin: 1cqw 0 }`, collapsing between neighbours.
+    var lineSpacing: CGFloat { cqw }
+    /// Static lyrics: `--DefaultLyricsSize: 5cqw` against the synced 7cqw, weight 500.
+    var staticFont: Font { .system(size: fontSize * 5 / 7, weight: .medium) }
+    /// `.line { padding-right: 5cqw }`, or the 15cqw duet inset on the side a line leans away from.
+    func insets(opposite: Bool) -> EdgeInsets {
+        if hasDuets {
+            return opposite ? EdgeInsets(top: 0, leading: cqw * 15, bottom: 0, trailing: 0)
+                            : EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: cqw * 15)
+        }
+        return EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: cqw * 5)
+    }
+
+    static func == (lhs: LyricsTypography, rhs: LyricsTypography) -> Bool {
+        lhs.fontSize == rhs.fontSize && lhs.cqw == rhs.cqw && lhs.hasDuets == rhs.hasDuets
+    }
 }
 
 /// How bright the lit / unlit parts of the fill gradient are (Mixed.css `--gradient-alpha*`).
@@ -86,16 +107,18 @@ struct LyricLineView: View, Equatable {
 
     var body: some View {
         content
+            .padding(typography.insets(opposite: line.oppositeAligned))
             .frame(maxWidth: .infinity, alignment: frameAlignment)
             .opacity(visual.opacity)
-            .blur(radius: visual.blur / 2)
+            .blur(radius: visual.blur > 0.05 ? visual.blur / 2 : 0)
     }
 
     @ViewBuilder
     private var content: some View {
         switch line.kind {
         case .syllable(let lead, let background):
-            VStack(alignment: horizontalAlignment, spacing: typography.fontSize * 0.12) {
+            // `.bg-line { margin: -1cqw 0 1cqw }` cancels the gap under the lead line.
+            VStack(alignment: horizontalAlignment, spacing: 0) {
                 if !lead.isEmpty {
                     WordFlowView(words: lead, visuals: visual.lead, fontSize: typography.fontSize,
                                  font: typography.leadFont, alpha: .lead, typography: typography,
@@ -114,15 +137,18 @@ struct LyricLineView: View, Equatable {
                 .multilineTextAlignment(textAlignment)
                 .lyricFill(visual.line.gradient, alpha: .lead)
                 .lyricGlow(visual.state == .active ? visual.line.glow : 0, kind: .line)
+                // Active line-synced lines grow to 1.05 from their aligned edge.
+                .scaleEffect(visual.scale, anchor: line.oppositeAligned ? .trailing : .leading)
 
         case .static(let text):
             Text(text)
-                .font(typography.leadFont)
+                .font(typography.staticFont)
                 .multilineTextAlignment(textAlignment)
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(.white)
 
         case .interlude:
-            InterludeDotsView(dots: visual.dots, presence: visual.presence, fontSize: typography.fontSize)
+            InterludeDotsView(dots: visual.dots, presence: visual.presence, groupScale: visual.dotGroupScale,
+                              typography: typography)
         }
     }
 }
@@ -140,7 +166,7 @@ private struct WordFlowView: View {
     let alignment: HorizontalAlignment
 
     var body: some View {
-        FlowLayout(alignment: alignment, spacing: fontSize * 0.26, rowSpacing: typography.rowSpacing) {
+        FlowLayout(alignment: alignment, spacing: typography.wordGap(fontSize), rowSpacing: 0) {
             ForEach(words.indices, id: \.self) { w in
                 HStack(spacing: 0) {
                     ForEach(words[w].syllables.indices, id: \.self) { s in
@@ -201,29 +227,36 @@ private struct GlyphView: View {
 
 // MARK: - Interlude
 
+/// The "•••" row of an instrumental gap (`.musical-line .dotGroup`): three "•" glyphs at 1.3× the
+/// lyric size, packed tight, each with its own springs; the whole group pops in and out.
 private struct InterludeDotsView: View {
     let dots: [GlyphVisual]
     let presence: Double
-    let fontSize: CGFloat
+    let groupScale: Double
+    let typography: LyricsTypography
 
     var body: some View {
-        let shown = clamp(presence, 0, 1)
-        HStack(spacing: fontSize * 0.28) {
-            ForEach(dots.indices, id: \.self) { i in
-                let dot = dots[i]
-                Circle()
-                    .fill(.white)
-                    .frame(width: fontSize * 0.3, height: fontSize * 0.3)
-                    .opacity(dot.opacity)
-                    .lyricGlow(dot.glow, kind: .dot)
-                    .scaleEffect(dot.scale)
-                    .offset(y: dot.yOffset * fontSize)
+        let dotSize = typography.fontSize * 1.3
+        // `--dot-gap: clamp(0.005rem, 1.7cqw, 0.18rem)`
+        let gap = min(max(0.08, typography.cqw * 1.7), 2.88)
+        if presence > 0 {
+            HStack(spacing: gap) {
+                ForEach(dots.indices, id: \.self) { i in
+                    let dot = dots[i]
+                    Text("•")
+                        .font(.system(size: dotSize, weight: .bold))
+                        .foregroundStyle(.white.opacity(GradientAlpha.lead.lit))
+                        .fixedSize()
+                        .opacity(dot.opacity)
+                        .lyricGlow(dot.glow, kind: .dot)
+                        .scaleEffect(dot.scale)
+                        .offset(y: dot.yOffset * typography.fontSize)
+                }
             }
+            // `line-height: 0.65` on the dots; the row itself keeps the lyric line height.
+            .frame(height: typography.fontSize * 1.18)
+            .scaleEffect(max(groupScale, 0.0001), anchor: .center)
         }
-        .scaleEffect(max(presence, 0.001), anchor: .leading)
-        .opacity(shown)
-        .frame(height: fontSize * 1.1 * shown, alignment: .center)
-        .padding(.vertical, -fontSize * 0.2 * (1 - shown))
     }
 }
 

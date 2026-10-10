@@ -7,6 +7,7 @@ struct NowPlayingView: View {
     @Environment(PlayerModel.self) private var player
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var auth: SpotifyAuth
+    @Environment(PerformanceMonitor.self) private var performance
     @State private var showSettings = false
     @State private var showPicker = false
     @State private var chromeVisible = true
@@ -26,7 +27,7 @@ struct NowPlayingView: View {
                 DynamicBackground(
                     image: settings.dynamicBackground ? player.backgroundArtwork : nil,
                     imageID: player.artworkID,
-                    animated: settings.dynamicBackground
+                    animated: settings.dynamicBackground && !reduced
                 )
 
                 if landscape {
@@ -79,6 +80,9 @@ struct NowPlayingView: View {
         var eligible: Bool
     }
 
+    /// Low Power Mode, a hot phone, or the battery saver setting.
+    private var reduced: Bool { settings.powerSaving || performance.constrained }
+
     private var lyricsLoaded: Bool {
         if case .loaded = player.lyricsState { return true }
         return false
@@ -111,8 +115,7 @@ struct NowPlayingView: View {
             lyricsArea(
                 topInset: chromeVisible ? headerHeight : 0,
                 bottomInset: chromeVisible ? controlsHeight : 0,
-                horizontalPadding: 28,
-                focusAnchor: 0.3
+                horizontalPadding: 28
             )
 
             VStack(spacing: 0) {
@@ -183,7 +186,7 @@ struct NowPlayingView: View {
             .padding(.leading, 12)
             .opacity(columnEmpty ? 0 : 1)
 
-            lyricsArea(topInset: 0, bottomInset: 0, horizontalPadding: 24, focusAnchor: 0.38)
+            lyricsArea(topInset: 0, bottomInset: 0, horizontalPadding: 24)
                 .frame(width: max(0, size.width - column - 12))
         }
         .frame(width: size.width, alignment: .leading)
@@ -310,7 +313,8 @@ struct NowPlayingView: View {
         PlaybackBar(
             onInteraction: { showChrome() },
             onShowQueue: { showPicker = true },
-            onHideControls: { hideChrome() }
+            onHideControls: { hideChrome() },
+            isVisible: chromeVisible
         )
         .foregroundStyle(.white)
     }
@@ -336,14 +340,13 @@ struct NowPlayingView: View {
     // MARK: Lyrics
 
     @ViewBuilder
-    private func lyricsArea(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat,
-                            focusAnchor: CGFloat) -> some View {
+    private func lyricsArea(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat) -> some View {
         switch player.lyricsState {
         case .loaded(let lyrics):
             LyricsView(
                 lyrics: lyrics, player: player, settings: settings,
                 topInset: topInset, bottomInset: bottomInset,
-                horizontalPadding: horizontalPadding, focusAnchor: focusAnchor,
+                horizontalPadding: horizontalPadding, reduced: reduced,
                 onInteraction: { showChrome() },
                 onBackgroundTap: { toggleChrome() }
             )

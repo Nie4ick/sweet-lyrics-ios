@@ -39,14 +39,18 @@ struct LineVisual: Equatable {
     var state: ElementState = .notSung
     var opacity: Double = 0.51
     var blur: Double = 0
+    /// Whole-line scale (line-synced lines grow to 1.05 while active).
+    var scale: Double = 1
     /// Syllable-synced lines: `[word][syllable]`.
     var lead: [[SyllableVisual]] = []
     var background: [[SyllableVisual]] = []
     /// Line-synced lines.
     var line = GlyphVisual()
-    /// Interlude dots and how much of the interlude row is shown (0…1).
+    /// Interlude dots. An interlude row only takes up space while active (`presence` 0/1);
+    /// its dot group pops in and out with `dotGroupScale`.
     var dots: [GlyphVisual] = []
     var presence: Double = 1
+    var dotGroupScale: Double = 0
 }
 
 // MARK: - Animation curves (values from Spicy Lyrics' LyricsAnimator.ts)
@@ -75,8 +79,29 @@ private enum Curves {
     static let notSungOpacity = 0.51
     static let activeOpacity = 1.0
     static let sungOpacity = 0.497
+    /// `.line.Active + .line.Sung` (a line overlapped by the active one) when line blur is on.
+    static let sungAfterActiveOpacity = 0.45
     static let blurMultiplier = 1.25
     static var maxBlur: Double { blurMultiplier * 5 + blurMultiplier * 0.465 }
+
+    // CSS transitions (Mixed.css).
+    /// `.line { transition: opacity 0.2s cubic-bezier(0.61, 1, 0.88, 1) }`
+    static let lineOpacity = (duration: 0.2, easing: Easing.cubicBezier(0.61, 1, 0.88, 1))
+    /// Line-synced `.line { transition: scale/opacity 0.2s cubic-bezier(0.37, 0, 0.63, 1) }`
+    static let lineSynced = (duration: 0.2, easing: Easing.cubicBezier(0.37, 0, 0.63, 1))
+    static let activeLineSyncedScale = 1.05
+    /// `.musical-line { transition: opacity 0.14s }`
+    static let interludeOpacity = (duration: 0.14, easing: Easing.ease)
+    /// `.dotGroup { transition: scale 0.3s }`
+    static let dotsIn = (duration: 0.3, easing: Easing.ease)
+    /// `.musical-line:is(.pre-hidden, :not(.Active)) .dotGroup`: a small wind-up, then gone.
+    static let dotsOut = (duration: 0.4, easing: Easing.linearPoints([
+        (0, 0), (0.094, -0.006), (0.18, -0.029), (0.433, -0.157), (0.514, -0.185), (0.559, -0.189),
+        (0.60, -0.182), (0.639, -0.163), (0.676, -0.133), (0.723, -0.074), (0.767, 0.006),
+        (0.85, 0.238), (0.927, 0.566), (1, 1),
+    ]))
+    /// The dots start hiding this long before the interlude ends (`preHiddenDotLineMs`).
+    static let preHiddenDots = 0.5
 }
 
 // MARK: - Spring bundles
@@ -115,14 +140,35 @@ private struct DotSprings {
     var opacity: Spring
 }
 
+/// Scale that eases in with one curve and out with another (the interlude's dot group).
+private struct InOutTween {
+    private var tween = Tween(0, duration: Curves.dotsOut.duration, easing: Curves.dotsOut.easing)
+    private var showing = false
+
+    mutating func update(show: Bool, now: Double, snap: Bool) -> Double {
+        if show != showing {
+            showing = show
+            let spec = show ? Curves.dotsIn : Curves.dotsOut
+            tween = Tween(tween.value, duration: spec.duration, easing: spec.easing)
+        }
+        return tween.update(to: show ? 1 : 0, now: now, snap: snap)
+    }
+
+    var isSettled: Bool { tween.isSettled }
+}
+
 private struct LineSprings {
-    var opacity: Spring
-    var blur: Spring
+    var opacity: Tween
+    var scale: Tween
     var glow: Spring
-    var presence: Spring
+    var dotGroup = InOutTween()
     var lead: [[SyllableSprings]]
     var background: [[SyllableSprings]]
     var dots: [DotSprings]
+    /// False once a line is off-stage and every spring has come to rest: it is skipped until
+    /// its state changes again. Most of a song is asleep at any moment.
+    var awake = true
+    var lastState: ElementState?
 }
 
 // MARK: - Animator
@@ -150,12 +196,13 @@ final class LyricsAnimator {
         var dt = lastFrame.map { now - $0 } ?? (1.0 / 60)
         if dt <= 0 { return }
         dt = min(dt, 1.0 / 15)
-        // A seek: snap the springs instead of animating across the whole song.
+        // A seek: snap everything instead of animating across the whole song.
         let jumped = lastPosition.map { abs(position - $0) > 1.5 } ?? true
         lastFrame = now
         lastPosition = position
 
         if lyrics.kind == .static {
+            guard jumped else { return }
             for index in visuals.indices {
                 visuals[index].state = .active
                 visuals[index].opacity = 1
@@ -166,76 +213,101 @@ final class LyricsAnimator {
         }
 
         focusIndex = Self.focus(in: lyrics.lines, at: position)
+        var previousActive = false
 
         for index in lyrics.lines.indices {
             let line = lyrics.lines[index]
-            var visual = visuals[index]
             var lineSprings = springs[index]
             let state = ElementState(position, line.start, line.end)
-            visual.state = state
+            if lineSprings.lastState != state || jumped { lineSprings.awake = true }
+            lineSprings.lastState = state
 
-            // Line level: opacity and the distance blur.
-            let targetOpacity: Double
+            // Line level: opacity (a CSS transition) and the distance blur (set directly).
+            var targetOpacity: Double
             switch state {
             case .notSung: targetOpacity = Curves.notSungOpacity
             case .active: targetOpacity = Curves.activeOpacity
             case .sung: targetOpacity = Curves.sungOpacity
             }
+            if state == .sung, previousActive, blurEnabled, !line.isInterlude {
+                targetOpacity = Curves.sungAfterActiveOpacity
+            }
+            if !line.isInterlude { previousActive = state == .active }
+
             let distance = abs(index - focusIndex)
-            let targetBlur = (!blurEnabled || state == .active || distance == 0)
+            let blur = (!blurEnabled || state == .active || distance == 0)
                 ? 0 : min(Curves.blurMultiplier * Double(distance), Curves.maxBlur)
-            lineSprings.opacity.setGoal(targetOpacity, replacePosition: jumped)
-            lineSprings.blur.setGoal(targetBlur, replacePosition: jumped)
-            visual.opacity = lineSprings.opacity.step(dt)
-            visual.blur = max(0, lineSprings.blur.step(dt))
+
+            var visual = visuals[index]
+            visual.state = state
+            visual.blur = blur
 
             switch line.kind {
             case .syllable(let lead, let background):
-                stepWords(lead, springs: &lineSprings.lead, into: &visual.lead, time: position, dt: dt, snap: jumped)
-                stepWords(background, springs: &lineSprings.background, into: &visual.background, time: position, dt: dt, snap: jumped)
+                visual.opacity = lineSprings.opacity.update(to: targetOpacity, now: now, snap: jumped)
+                if lineSprings.awake {
+                    let settledLead = stepWords(lead, springs: &lineSprings.lead, into: &visual.lead,
+                                                time: position, dt: dt, snap: jumped)
+                    let settledBackground = stepWords(background, springs: &lineSprings.background,
+                                                      into: &visual.background, time: position, dt: dt, snap: jumped)
+                    if state != .active, settledLead, settledBackground { lineSprings.awake = false }
+                }
 
             case .line:
-                let p = progress(position, line.start, line.end)
-                let targetGlow: Double
-                switch state {
-                case .active:
-                    targetGlow = Curves.lineGlow.at(p)
-                    visual.line.gradient = p
-                case .notSung:
-                    targetGlow = Curves.lineGlow.at(0)
-                    visual.line.gradient = -0.2
-                case .sung:
-                    targetGlow = Curves.lineGlow.at(1)
-                    visual.line.gradient = 1
+                visual.opacity = lineSprings.opacity.update(to: targetOpacity, now: now, snap: jumped)
+                visual.scale = lineSprings.scale.update(
+                    to: state == .active ? Curves.activeLineSyncedScale : 1, now: now, snap: jumped)
+                if lineSprings.awake {
+                    let p = progress(position, line.start, line.end)
+                    let targetGlow: Double
+                    switch state {
+                    case .active:
+                        targetGlow = Curves.lineGlow.at(p)
+                        visual.line.gradient = p
+                    case .notSung:
+                        targetGlow = Curves.lineGlow.at(0)
+                        visual.line.gradient = -0.2
+                    case .sung:
+                        targetGlow = Curves.lineGlow.at(1)
+                        visual.line.gradient = 1
+                    }
+                    lineSprings.glow.setGoal(targetGlow, replacePosition: jumped)
+                    visual.line.glow = lineSprings.glow.step(dt)
+                    if state != .active, lineSprings.glow.canSleep { lineSprings.awake = false }
                 }
-                lineSprings.glow.setGoal(targetGlow, replacePosition: jumped)
-                visual.line.glow = lineSprings.glow.step(dt)
 
             case .interlude(let dots):
-                let shown = state == .active && position < line.end - 0.45
-                lineSprings.presence.setGoal(shown ? 1 : 0, replacePosition: jumped)
-                visual.presence = clamp(lineSprings.presence.step(dt), 0, 1.2)
-                for (k, dot) in dots.enumerated() {
-                    let dotState = ElementState(position, dot.start, dot.end)
-                    let p: Double
-                    switch dotState {
-                    case .notSung: p = 0
-                    case .active: p = progress(position, dot.start, dot.end)
-                    case .sung: p = 1
+                // Only takes up space while active; fades in and out over 0.14s.
+                visual.presence = state == .active ? 1 : 0
+                visual.opacity = lineSprings.opacity.update(to: state == .active ? 1 : 0, now: now, snap: jumped)
+                let preHidden = position > line.end - Curves.preHiddenDots
+                visual.dotGroupScale = lineSprings.dotGroup.update(
+                    show: state == .active && !preHidden, now: now, snap: jumped)
+                if lineSprings.awake {
+                    var settled = lineSprings.dotGroup.isSettled
+                    for (k, dot) in dots.enumerated() {
+                        let p: Double
+                        switch ElementState(position, dot.start, dot.end) {
+                        case .notSung: p = 0
+                        case .active: p = progress(position, dot.start, dot.end)
+                        case .sung: p = 1
+                        }
+                        var s = lineSprings.dots[k]
+                        if jumped {
+                            s.glyph.scale.setGoal(Curves.dotScale.at(p), replacePosition: true)
+                            s.glyph.yOffset.setGoal(Curves.dotYOffset.at(p), replacePosition: true)
+                            s.glyph.glow.setGoal(Curves.dotGlow.at(p), replacePosition: true)
+                            s.opacity.setGoal(Curves.dotOpacity.at(p), replacePosition: true)
+                        }
+                        let (scale, y, glow) = s.glyph.step(
+                            scale: Curves.dotScale.at(p), yOffset: Curves.dotYOffset.at(p), glow: Curves.dotGlow.at(p), dt: dt)
+                        s.opacity.setGoal(Curves.dotOpacity.at(p))
+                        let opacity = s.opacity.step(dt)
+                        settled = settled && s.glyph.isSettled && s.opacity.canSleep
+                        lineSprings.dots[k] = s
+                        visual.dots[k] = GlyphVisual(scale: scale, yOffset: y, glow: glow, gradient: 1, opacity: opacity)
                     }
-                    var s = lineSprings.dots[k]
-                    if jumped {
-                        s.glyph.scale.setGoal(Curves.dotScale.at(p), replacePosition: true)
-                        s.glyph.yOffset.setGoal(Curves.dotYOffset.at(p), replacePosition: true)
-                        s.glyph.glow.setGoal(Curves.dotGlow.at(p), replacePosition: true)
-                        s.opacity.setGoal(Curves.dotOpacity.at(p), replacePosition: true)
-                    }
-                    let (scale, y, glow) = s.glyph.step(
-                        scale: Curves.dotScale.at(p), yOffset: Curves.dotYOffset.at(p), glow: Curves.dotGlow.at(p), dt: dt)
-                    s.opacity.setGoal(Curves.dotOpacity.at(p))
-                    let opacity = s.opacity.step(dt)
-                    lineSprings.dots[k] = s
-                    visual.dots[k] = GlyphVisual(scale: scale, yOffset: y, glow: glow, gradient: 1, opacity: opacity)
+                    if state != .active, settled { lineSprings.awake = false }
                 }
 
             case .static:
@@ -277,8 +349,10 @@ final class LyricsAnimator {
         return index
     }
 
+    /// Steps every syllable of a word list; returns whether all of their springs are at rest.
     private func stepWords(_ words: [PreparedWord], springs: inout [[SyllableSprings]], into visuals: inout [[SyllableVisual]],
-                           time: Double, dt: Double, snap: Bool) {
+                           time: Double, dt: Double, snap: Bool) -> Bool {
+        var settled = true
         for w in words.indices {
             for s in words[w].syllables.indices {
                 let syllable = words[w].syllables[s]
@@ -289,10 +363,12 @@ final class LyricsAnimator {
                 } else {
                     stepSyllable(syllable, &store, &visual, time: time, dt: dt, snap: snap)
                 }
+                settled = settled && store.glyph.isSettled && store.letters.allSatisfy(\.isSettled)
                 springs[w][s] = store
                 visuals[w][s] = visual
             }
         }
+        return settled
     }
 
     private func stepSyllable(_ syllable: PreparedSyllable, _ store: inout SyllableSprings, _ visual: inout SyllableVisual,
@@ -428,11 +504,19 @@ final class LyricsAnimator {
         default:
             break
         }
+        let opacity: Tween
+        switch line.kind {
+        case .interlude:
+            opacity = Tween(0, duration: Curves.interludeOpacity.duration, easing: Curves.interludeOpacity.easing)
+        case .line:
+            opacity = Tween(Curves.notSungOpacity, duration: Curves.lineSynced.duration, easing: Curves.lineSynced.easing)
+        default:
+            opacity = Tween(Curves.notSungOpacity, duration: Curves.lineOpacity.duration, easing: Curves.lineOpacity.easing)
+        }
         return LineSprings(
-            opacity: Spring(Curves.notSungOpacity, frequency: 1.6, damping: 1),
-            blur: Spring(0, frequency: 1.4, damping: 1),
+            opacity: opacity,
+            scale: Tween(1, duration: Curves.lineSynced.duration, easing: Curves.lineSynced.easing),
             glow: Spring(0, frequency: 1, damping: 0.5),
-            presence: Spring(0, frequency: 1.6, damping: 0.85),
             lead: lead,
             background: background,
             dots: dots
@@ -457,6 +541,7 @@ final class LyricsAnimator {
         case .interlude(let dots):
             visual.dots = dots.map { _ in GlyphVisual(scale: Curves.dotScale.at(0), yOffset: 0, glow: 0, gradient: 1, opacity: Curves.dotOpacity.at(0)) }
             visual.presence = 0
+            visual.opacity = 0
         case .static:
             visual.opacity = 1
             visual.line.gradient = 1
