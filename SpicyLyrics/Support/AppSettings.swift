@@ -22,6 +22,8 @@ final class AppSettings {
     var keepScreenOn: Bool { didSet { defaults.set(keepScreenOn, forKey: Keys.keepScreenOn) } }
     /// Fade the header and controls out while lyrics play, like Apple Music.
     var autoHideControls: Bool { didSet { defaults.set(autoHideControls, forKey: Keys.autoHide) } }
+    /// The system volume slider under the playback buttons.
+    var showVolumeSlider: Bool { didSet { defaults.set(showVolumeSlider, forKey: Keys.volumeSlider) } }
     /// Battery saver: 30 fps lyrics, no line blur, still background.
     var powerSaving: Bool { didSet { defaults.set(powerSaving, forKey: Keys.powerSaving) } }
     /// Landscape: show the big artwork / the title and artist next to the lyrics.
@@ -47,6 +49,7 @@ final class AppSettings {
             Keys.useOwnClientID: false,
             Keys.landscapeArtwork: true,
             Keys.powerSaving: false,
+            Keys.volumeSlider: true,
             Keys.landscapeTitle: true,
         ])
         spotifyClientID = defaults.string(forKey: Keys.clientID) ?? ""
@@ -61,6 +64,7 @@ final class AppSettings {
         keepScreenOn = defaults.bool(forKey: Keys.keepScreenOn)
         autoHideControls = defaults.bool(forKey: Keys.autoHide)
         powerSaving = defaults.bool(forKey: Keys.powerSaving)
+        showVolumeSlider = defaults.bool(forKey: Keys.volumeSlider)
         landscapeArtwork = defaults.bool(forKey: Keys.landscapeArtwork)
         landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
@@ -107,6 +111,7 @@ final class AppSettings {
         static let keepScreenOn = "keepScreenOn"
         static let autoHide = "autoHideControls"
         static let powerSaving = "powerSaving"
+        static let volumeSlider = "showVolumeSlider"
         static let landscapeArtwork = "landscapeArtwork"
         static let landscapeTitle = "landscapeTitle"
     }

@@ -227,33 +227,39 @@ private struct GlyphView: View {
 
 // MARK: - Interlude
 
-/// The "•••" row of an instrumental gap (`.musical-line .dotGroup`): three "•" glyphs at 1.3× the
-/// lyric size, packed tight, each with its own springs; the whole group pops in and out.
+/// The "•••" row of an instrumental gap (`.musical-line .dotGroup`): three dots at 1.3× the lyric
+/// size, packed tight, each with its own springs; the whole group pops in and out.
+///
+/// The extension draws "•" in its own font, whose bullet is 0.348 em across on a 0.485 em advance
+/// (SF Pro's is only 0.246 em), so the dots are drawn as circles of exactly that size.
 private struct InterludeDotsView: View {
     let dots: [GlyphVisual]
     let presence: Double
     let groupScale: Double
     let typography: LyricsTypography
 
+    private static let bulletDiameter: CGFloat = 0.348
+    private static let bulletAdvance: CGFloat = 0.485
+
     var body: some View {
-        let dotSize = typography.fontSize * 1.3
+        let dotFont = typography.fontSize * 1.3
+        let diameter = dotFont * Self.bulletDiameter
         // `--dot-gap: clamp(0.005rem, 1.7cqw, 0.18rem)`
         let gap = min(max(0.08, typography.cqw * 1.7), 2.88)
         if presence > 0 {
             HStack(spacing: gap) {
                 ForEach(dots.indices, id: \.self) { i in
                     let dot = dots[i]
-                    Text("•")
-                        .font(.system(size: dotSize, weight: .bold))
-                        .foregroundStyle(.white.opacity(GradientAlpha.lead.lit))
-                        .fixedSize()
+                    Circle()
+                        .fill(.white.opacity(GradientAlpha.lead.lit))
+                        .frame(width: diameter, height: diameter)
+                        .frame(width: dotFont * Self.bulletAdvance)
                         .opacity(dot.opacity)
                         .lyricGlow(dot.glow, kind: .dot)
                         .scaleEffect(dot.scale)
                         .offset(y: dot.yOffset * typography.fontSize)
                 }
             }
-            // `line-height: 0.65` on the dots; the row itself keeps the lyric line height.
             .frame(height: typography.fontSize * 1.18)
             .scaleEffect(max(groupScale, 0.0001), anchor: .center)
         }

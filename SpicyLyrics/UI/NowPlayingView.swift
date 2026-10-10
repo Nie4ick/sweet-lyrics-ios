@@ -150,7 +150,26 @@ struct NowPlayingView: View {
                     .offset(y: chromeVisible ? 0 : 40)
             }
             .allowsHitTesting(chromeVisible)
+
+            // Like Apple Music: while the controls are hidden, where they live is not part of the
+            // lyrics. A tap there brings them back instead of seeking to a line.
+            if !chromeVisible {
+                VStack(spacing: 0) {
+                    wakeZone.frame(height: headerHeight)
+                    Spacer(minLength: 0)
+                    wakeZone.frame(height: controlsHeight)
+                }
+            }
         }
+    }
+
+    /// Invisible area that shows the controls on tap.
+    private var wakeZone: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture { showChrome() }
+            .accessibilityLabel("Показать элементы управления")
+            .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Landscape
@@ -196,6 +215,10 @@ struct NowPlayingView: View {
                 Spacer(minLength: 0)
             }
             .frame(width: column)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            // Empty space in the column toggles the controls (the buttons keep their own taps).
+            .onTapGesture { toggleChrome() }
             .padding(.leading, 12)
             .opacity(columnEmpty ? 0 : 1)
 
@@ -204,6 +227,11 @@ struct NowPlayingView: View {
         }
         .frame(width: size.width, alignment: .leading)
         .offset(x: columnEmpty ? -(column + 12) / 2 : 0)
+        .overlay(alignment: .bottom) {
+            if !chromeVisible {
+                wakeZone.frame(height: size.height * 0.2)
+            }
+        }
         .animation(Self.chromeAnimation, value: showArtwork)
         .animation(Self.chromeAnimation, value: showTitle)
     }

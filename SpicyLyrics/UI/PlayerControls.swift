@@ -6,6 +6,7 @@ import SwiftUI
 /// Apple Music style transport: scrubber, play controls, volume and the bottom icon row.
 struct PlaybackBar: View {
     @Environment(PlayerModel.self) private var player
+    @Environment(AppSettings.self) private var settings
     /// Called on every touch, so the auto-hide timer starts over.
     var onInteraction: () -> Void = {}
     var onShowQueue: () -> Void = {}
@@ -34,8 +35,10 @@ struct PlaybackBar: View {
             }
             .padding(.bottom, 18)
 
-            VolumeRow()
-                .padding(.bottom, 20)
+            if settings.showVolumeSlider {
+                VolumeRow()
+                    .padding(.bottom, 20)
+            }
 
             HStack {
                 Button {
