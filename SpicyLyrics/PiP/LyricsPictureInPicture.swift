@@ -559,7 +559,7 @@ final class PiPFrameRenderer {
                     context.setBlendMode(.destinationIn)
                     let start = frame.minX + edge - advance
                     let end = start + max(1, feather)
-                    let mask = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(),
+                    let mask = CGGradient(colorSpace: CGColorSpaceCreateDeviceGray(),
                                           colorComponents: [1, 1, 1, 0], locations: [0, 1], count: 2)!
                     context.drawLinearGradient(mask, start: CGPoint(x: start, y: frame.minY),
                                                end: CGPoint(x: end, y: frame.minY),
