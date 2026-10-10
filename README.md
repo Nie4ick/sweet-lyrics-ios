@@ -19,7 +19,7 @@ These features work, but still need testing and refinement.
 | Word-by-word highlighting | Port of `LyricsAnimator.ts`: NotSung/Active/Sung states, syllable gradients, cubic splines for scale/y-offset/glow, and [spr](https://github.com/Fraktality/spr) springs |
 | Per-letter animation | Syllables longer than one second are split into letters with a proximity effect, following `Emphasize.ts` |
 | Line blur | Blur increases with distance from the active line (`BlurMultiplier = 1.25`) |
-| Duets and backing vocals | Right-aligned `OppositeAligned` lines and smaller backing vocals below the main line |
+| Duets and backing vocals | Right-aligned `OppositeAligned` lines; each backing-vocal group is its own smaller row under the main line (`bg-line`), so two can follow each other |
 | Instrumental breaks | Three animated dots during gaps of at least three seconds |
 | Line-synced and static lyrics | `Line` and `Static` lyric types |
 | Dynamic background | Pre-blurred, saturated album artwork drifting on Core Animation (light on battery) |
@@ -27,6 +27,10 @@ These features work, but still need testing and refinement.
 | Romanization | Supported when returned by the API (`TransliteratedText`) |
 | Seeking | Tap a lyric line to seek to it; requires Spotify Premium |
 | Track picker | Tap the track header (or the list button) to jump ahead in the queue, replay something from your history, or search; swipe the header sideways to skip. Requires Spotify Premium |
+| Own TTML files | Like the extension's Lyrics Manager: pick a `.ttml` file or paste TTML, apply it just once or save it to a library that wins over online sources (*••• → Свой текст (TTML)*) |
+| Apple Music style player | Controls fade away while a song plays; landscape and iPad put artwork and controls beside the lyrics |
+| Gestures | Swipe the lyrics sideways to change tracks, pinch to resize, long-press a line to seek / copy / share (iOS 18+) |
+| iPad | Side-by-side layout in both orientations, larger lyrics, pointer hover, keyboard shortcuts (space, ⌘← / ⌘→) |
 
 ## Spotify Connection
 
