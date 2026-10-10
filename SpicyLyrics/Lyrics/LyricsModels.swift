@@ -31,12 +31,31 @@ struct LyricLine: Codable, Hashable {
     var background: [LyricSyllable]
 }
 
+/// A person credited for a sync (Spicy Lyrics' `UploadAttribution` / `TTMLUploadMetadata`).
+struct LyricsContributor: Codable, Hashable {
+    var name: String
+    var profileURL: URL?
+    var avatarURL: URL?
+}
+
+/// The attribution shown after the lyrics, as the Spicy Lyrics API asks clients to.
+/// Optional fields so lyrics cached before they existed still decode.
+struct LyricsCredits: Codable, Hashable {
+    /// The catalogue that answered: "Apple Music", "Spotify", "Spicy Lyrics", "LRCLIB"…
+    var providedBy: String?
+    /// A Spicy Lyrics community sync ("These lyrics have been provided by our community").
+    var isCommunity: Bool?
+    var maker: LyricsContributor?
+    var uploader: LyricsContributor?
+}
+
 struct LyricsDocument: Codable, Hashable {
     var kind: LyricsKind
     var lines: [LyricLine]
     var songwriters: [String]
     /// Human readable provider, e.g. "Spicy Lyrics · Apple Music".
     var sourceName: String
+    var credits: LyricsCredits? = nil
 
     var hasRomanization: Bool {
         lines.contains { line in
@@ -95,6 +114,7 @@ struct PreparedLyrics: Hashable {
     var lines: [PreparedLine]
     var songwriters: [String]
     var sourceName: String
+    var credits: LyricsCredits
 
     /// Gap (seconds) that earns an interlude, like Spicy Lyrics' `getLyricsBetweenShow()`.
     static let interludeThreshold: Double = 3
@@ -109,6 +129,7 @@ struct PreparedLyrics: Hashable {
         kind = document.kind
         songwriters = document.songwriters
         sourceName = document.sourceName
+        credits = document.credits ?? LyricsCredits(providedBy: document.sourceName)
 
         var result: [PreparedLine] = []
         func append(_ start: Double, _ end: Double, _ opposite: Bool, _ kind: PreparedLineKind) {
@@ -151,12 +172,20 @@ struct PreparedLyrics: Hashable {
         lines = result
     }
 
+    /// The three dots' timing, exactly as `Applyer/Synced/Syllable.ts` lays them out: thirds of the
+    /// gap, each pulled earlier by a third of the padding, the last one ending `padding` early.
     private static func dots(from start: Double, to end: Double) -> [PreparedLetter] {
-        let usableEnd = max(start + 0.3, end - interludePadding)
-        let third = (usableEnd - start) / 3
-        return (0..<3).map { i in
-            PreparedLetter(text: "•", start: start + Double(i) * third, end: start + Double(i + 1) * third)
-        }
+        let total = end - start
+        let third = total / 3
+        let padding = interludePadding / 3
+        let dot1 = max(start, start + third - padding)
+        let dot2 = max(dot1, start + third * 2 - padding * 2)
+        let dot3 = max(dot2, start + total - interludePadding)
+        return [
+            PreparedLetter(text: "•", start: start, end: dot1),
+            PreparedLetter(text: "•", start: dot1, end: dot2),
+            PreparedLetter(text: "•", start: dot2, end: dot3),
+        ]
     }
 
     private static func words(from syllables: [LyricSyllable], romanized: Bool) -> [PreparedWord] {

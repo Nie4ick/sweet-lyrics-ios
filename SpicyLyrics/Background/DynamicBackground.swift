@@ -1,7 +1,14 @@
+import CoreImage
+import QuartzCore
 import SwiftUI
 import UIKit
 
-/// Animated, blurred cover art behind the lyrics.
+/// Blurred, slowly drifting cover art behind the lyrics.
+///
+/// The cover is blurred and saturated once per track; the motion is plain Core Animation
+/// (rotations and drifts of a few pre-rendered layers), which the system render server runs
+/// on its own. No per-frame work in the app and no full-screen live blur, which is what made
+/// the earlier shader-based background heat the phone.
 struct DynamicBackground: View {
     let image: UIImage?
     let imageID: String
@@ -10,72 +17,203 @@ struct DynamicBackground: View {
     var body: some View {
         ZStack {
             Color(red: 0.07, green: 0.07, blue: 0.08)
-            if let image {
-                CoverLayers(image: image, animated: animated)
-                    .id(imageID)
-                    .transition(.opacity)
-            }
+            CoverBlobs(image: image, imageID: imageID, animated: animated)
             // Keeps white lyrics readable on bright covers.
             Color.black.opacity(0.28)
         }
-        .animation(.easeInOut(duration: 1.0), value: imageID)
         .ignoresSafeArea()
+        .allowsHitTesting(false)
     }
 }
 
-private struct CoverLayers: View {
-    let image: UIImage
+private struct CoverBlobs: UIViewRepresentable {
+    let image: UIImage?
+    let imageID: String
     let animated: Bool
 
-    var body: some View {
-        GeometryReader { geometry in
-            if animated {
-                TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-                    let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600)
-                    layers(size: geometry.size, time: t)
-                        .distortionEffect(
-                            ShaderLibrary.kawarpWarp(.float2(geometry.size), .float(Float(t * 0.25)), .float(1)),
-                            maxSampleOffset: CGSize(width: 90, height: 90)
-                        )
-                        .blur(radius: 45, opaque: true)
-                        .saturation(1.5)
-                        .brightness(-0.12)
-                }
-            } else {
-                layers(size: geometry.size, time: 0)
-                    .blur(radius: 55, opaque: true)
-                    .saturation(1.4)
-                    .brightness(-0.12)
+    func makeUIView(context: Context) -> CoverBlobsView { CoverBlobsView() }
+
+    func updateUIView(_ view: CoverBlobsView, context: Context) {
+        view.setAnimated(animated)
+        view.setImage(image, id: image == nil ? "" : imageID)
+    }
+}
+
+final class CoverBlobsView: UIView {
+    /// One full-bleed layer and three soft "blobs" on top, each turning and drifting at its own pace.
+    private struct LayerSpec {
+        var size: CGFloat          // × the view's diagonal
+        var center: CGPoint        // fraction of the view
+        var rotationPeriod: Double // seconds per turn; negative turns the other way
+        var drift: CGSize          // ellipse radii, fraction of the view
+        var driftPeriod: Double
+        var isBlob: Bool
+    }
+
+    private static let specs: [LayerSpec] = [
+        LayerSpec(size: 1.35, center: CGPoint(x: 0.5, y: 0.5), rotationPeriod: 140, drift: .zero, driftPeriod: 0, isBlob: false),
+        LayerSpec(size: 0.95, center: CGPoint(x: 0.22, y: 0.24), rotationPeriod: -90, drift: CGSize(width: 0.1, height: 0.07), driftPeriod: 41, isBlob: true),
+        LayerSpec(size: 0.85, center: CGPoint(x: 0.82, y: 0.68), rotationPeriod: 70, drift: CGSize(width: 0.08, height: 0.09), driftPeriod: 47, isBlob: true),
+        LayerSpec(size: 0.75, center: CGPoint(x: 0.3, y: 0.86), rotationPeriod: -110, drift: CGSize(width: 0.09, height: 0.06), driftPeriod: 53, isBlob: true),
+    ]
+
+    private static let ciContext = CIContext(options: [.cacheIntermediates: false])
+
+    private let container = CALayer()
+    private var coverLayers: [CALayer] = []
+    private var currentID: String?
+    private var animated = true
+    private var processing: Task<Void, Never>?
+    private var foregroundObserver: NSObjectProtocol?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        clipsToBounds = true
+        layer.addSublayer(container)
+        for _ in Self.specs {
+            let cover = CALayer()
+            cover.contentsGravity = .resizeAspectFill
+            cover.magnificationFilter = .linear
+            cover.minificationFilter = .linear
+            container.addSublayer(cover)
+            coverLayers.append(cover)
+        }
+        // Infinite animations are dropped while the app is in the background.
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.restartAnimations() }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    deinit {
+        processing?.cancel()
+        if let foregroundObserver { NotificationCenter.default.removeObserver(foregroundObserver) }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        container.frame = bounds
+        let diagonal = hypot(bounds.width, bounds.height)
+        for (cover, spec) in zip(coverLayers, Self.specs) {
+            let side = diagonal * spec.size
+            cover.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+            cover.position = CGPoint(x: bounds.width * spec.center.x, y: bounds.height * spec.center.y)
+        }
+        CATransaction.commit()
+        restartAnimations()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        restartAnimations()
+    }
+
+    func setAnimated(_ value: Bool) {
+        guard value != animated else { return }
+        animated = value
+        restartAnimations()
+    }
+
+    func setImage(_ image: UIImage?, id: String) {
+        guard id != currentID else { return }
+        currentID = id
+        processing?.cancel()
+        guard let image else {
+            apply(base: nil, blob: nil)
+            return
+        }
+        processing = Task.detached(priority: .utility) { [weak self] in
+            let rendered = CoverBlobsView.render(image)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, self.currentID == id else { return }
+                self.apply(base: rendered?.base, blob: rendered?.blob)
             }
         }
     }
 
-    private func layers(size: CGSize, time t: Double) -> some View {
-        let side = max(size.width, size.height) * 1.25
-        return ZStack {
-            Image(uiImage: image)
-                .resizable()
-                .frame(width: side * 1.4, height: side * 1.4)
-                .rotationEffect(.radians(t * 0.045))
-                .position(x: size.width * 0.5, y: size.height * 0.5)
-            Image(uiImage: image)
-                .resizable()
-                .frame(width: side * 0.85, height: side * 0.85)
-                .rotationEffect(.radians(-t * 0.07 + 1.3))
-                .position(x: size.width * (0.25 + 0.08 * sin(t * 0.11)), y: size.height * (0.25 + 0.06 * cos(t * 0.09)))
-            Image(uiImage: image)
-                .resizable()
-                .frame(width: side * 0.7, height: side * 0.7)
-                .rotationEffect(.radians(t * 0.09 + 2.6))
-                .position(x: size.width * (0.78 + 0.07 * cos(t * 0.13)), y: size.height * (0.72 + 0.07 * sin(t * 0.1)))
+    // MARK: Rendering
+
+    private func apply(base: CGImage?, blob: CGImage?) {
+        let fade = CATransition()
+        fade.type = .fade
+        fade.duration = 1.0
+        container.add(fade, forKey: "crossfade")
+        for (cover, spec) in zip(coverLayers, Self.specs) {
+            cover.contents = spec.isBlob ? blob : base
         }
-        .frame(width: size.width, height: size.height)
-        .clipped()
+    }
+
+    /// Small, saturated, pre-blurred copies: one opaque, one fading out radially for the blobs.
+    /// Scaled up to fill the screen, a tiny image looks exactly like a heavy blur.
+    private static func render(_ image: UIImage) -> (base: CGImage, blob: CGImage)? {
+        guard let cgImage = image.downscaled(to: 96).cgImage else { return nil }
+        let input = CIImage(cgImage: cgImage)
+        let extent = input.extent
+        let colored = input.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 1.7,
+            kCIInputBrightnessKey: -0.03,
+            kCIInputContrastKey: 1.05,
+        ])
+        let blurred = colored.clampedToExtent().applyingGaussianBlur(sigma: 4).cropped(to: extent)
+        guard let base = ciContext.createCGImage(blurred, from: extent) else { return nil }
+
+        let radius = min(extent.width, extent.height) / 2
+        guard let gradient = CIFilter(name: "CIRadialGradient", parameters: [
+            "inputCenter": CIVector(x: extent.midX, y: extent.midY),
+            "inputRadius0": radius * 0.3,
+            "inputRadius1": radius,
+            "inputColor0": CIColor(red: 1, green: 1, blue: 1, alpha: 1),
+            "inputColor1": CIColor(red: 1, green: 1, blue: 1, alpha: 0),
+        ])?.outputImage?.cropped(to: extent) else { return nil }
+        let blobImage = blurred.applyingFilter("CIBlendWithAlphaMask", parameters: [
+            kCIInputBackgroundImageKey: CIImage.empty(),
+            kCIInputMaskImageKey: gradient,
+        ])
+        guard let blob = ciContext.createCGImage(blobImage, from: extent) else { return nil }
+        return (base, blob)
+    }
+
+    // MARK: Motion
+
+    private func restartAnimations() {
+        for cover in coverLayers { cover.removeAllAnimations() }
+        guard animated, window != nil, bounds.width > 0 else { return }
+        // Slow motion looks the same at 30 fps and costs half as much.
+        let frameRate = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
+
+        for (cover, spec) in zip(coverLayers, Self.specs) {
+            let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+            rotation.fromValue = 0
+            rotation.toValue = (spec.rotationPeriod < 0 ? -1 : 1) * 2 * Double.pi
+            rotation.duration = abs(spec.rotationPeriod)
+            rotation.repeatCount = .infinity
+            rotation.isRemovedOnCompletion = false
+            rotation.preferredFrameRateRange = frameRate
+            cover.add(rotation, forKey: "rotation")
+
+            guard spec.driftPeriod > 0 else { continue }
+            let radii = CGSize(width: bounds.width * spec.drift.width, height: bounds.height * spec.drift.height)
+            let center = cover.position
+            let drift = CAKeyframeAnimation(keyPath: "position")
+            drift.path = CGPath(ellipseIn: CGRect(x: center.x - radii.width, y: center.y - radii.height,
+                                                  width: radii.width * 2, height: radii.height * 2), transform: nil)
+            drift.calculationMode = .paced
+            drift.duration = spec.driftPeriod
+            drift.repeatCount = .infinity
+            drift.isRemovedOnCompletion = false
+            drift.preferredFrameRateRange = frameRate
+            cover.add(drift, forKey: "drift")
+        }
     }
 }
 
 extension UIImage {
-    /// A small copy for the background: blurring 160 px is far cheaper than blurring 640 px.
+    /// A small copy, drawn at scale 1.
     func downscaled(to maxSide: CGFloat) -> UIImage {
         let longest = max(size.width, size.height)
         guard longest > maxSide else { return self }

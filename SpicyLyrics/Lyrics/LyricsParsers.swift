@@ -6,17 +6,19 @@ enum SpicyLyricsParser {
     static func parse(body: [String: Any]) -> LyricsDocument? {
         let type = JSONLoose.string(body["Type"]) ?? ""
         let songwriters = (body["SongWriters"] as? [Any])?.compactMap { $0 as? String } ?? []
-        let sourceName = "Spicy Lyrics · " + originName(JSONLoose.string(body["source"]))
+        let rawSource = JSONLoose.string(body["source"])
+        let sourceName = "Spicy Lyrics · " + originName(rawSource)
+        let credits = parseCredits(body, rawSource: rawSource)
 
         switch type.lowercased() {
         case "syllable":
             let lines = parseSyllableLines(JSONLoose.objects(body["Content"]))
             guard !lines.isEmpty else { return nil }
-            return LyricsDocument(kind: .syllable, lines: lines, songwriters: songwriters, sourceName: sourceName)
+            return LyricsDocument(kind: .syllable, lines: lines, songwriters: songwriters, sourceName: sourceName, credits: credits)
         case "line":
             let lines = parseLineLines(JSONLoose.objects(body["Content"]))
             guard !lines.isEmpty else { return nil }
-            return LyricsDocument(kind: .line, lines: lines, songwriters: songwriters, sourceName: sourceName)
+            return LyricsDocument(kind: .line, lines: lines, songwriters: songwriters, sourceName: sourceName, credits: credits)
         default:
             let staticLines = JSONLoose.objects(body["Lines"]).compactMap { item -> LyricLine? in
                 guard let text = JSONLoose.string(item["Text"]) else { return nil }
@@ -27,7 +29,7 @@ enum SpicyLyricsParser {
                                  lead: [], background: [])
             }
             guard !staticLines.isEmpty else { return nil }
-            return LyricsDocument(kind: .static, lines: staticLines, songwriters: songwriters, sourceName: sourceName)
+            return LyricsDocument(kind: .static, lines: staticLines, songwriters: songwriters, sourceName: sourceName, credits: credits)
         }
     }
 
@@ -98,6 +100,67 @@ enum SpicyLyricsParser {
         .sorted { $0.start < $1.start }
     }
 
+    // MARK: Attribution
+
+    /// "Provided by" plus the community maker / uploader, as the extension shows them
+    /// (`ApplyProvider.ts`, `ApplyIsByCommunity.tsx`). The v1 API calls the block
+    /// `UploadAttribution`; the `/query` payload calls it `TTMLUploadMetadata`.
+    private static func parseCredits(_ body: [String: Any], rawSource: String?) -> LyricsCredits {
+        let upload = (body["UploadAttribution"] as? [String: Any]) ?? (body["TTMLUploadMetadata"] as? [String: Any])
+        let maker = contributor(upload?["Maker"])
+        let uploader = contributor(upload?["Uploader"])
+        let source = (rawSource ?? "").lowercased()
+        let isCommunity = source.contains("spl") || source.contains("community")
+            || ((maker != nil || uploader != nil) && !source.contains("aml") && !source.contains("spt"))
+        return LyricsCredits(
+            providedBy: providerLabel(rawSource),
+            isCommunity: isCommunity,
+            maker: maker,
+            uploader: uploader
+        )
+    }
+
+    /// Spicy Lyrics' `ProviderMap`.
+    private static func providerLabel(_ raw: String?) -> String {
+        let source = (raw ?? "").lowercased()
+        if source.contains("spt") || source.contains("spotify") { return "Spotify" }
+        if source.contains("aml") || source.contains("apple") { return "Apple Music" }
+        if source.contains("spl") || source.contains("spicy") || source.contains("community") { return "Spicy Lyrics" }
+        if source.contains("ldb") { return "Local DB" }
+        return "Spicy Lyrics"
+    }
+
+    private static let trustedProfileHosts: Set<String> = ["spicylyrics.org", "www.spicylyrics.org", "github.com"]
+
+    /// A maker / uploader: a bare name, or `{ username, id, avatar, url }` in any of the casings seen.
+    static func contributor(_ value: Any?) -> LyricsContributor? {
+        if let name = (value as? String)?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            return LyricsContributor(name: name.hasPrefix("@") ? String(name.dropFirst()) : name)
+        }
+        guard let item = value as? [String: Any] else { return nil }
+        func text(_ keys: [String]) -> String? {
+            for key in keys {
+                if let string = (item[key] as? String)?.trimmingCharacters(in: .whitespaces), !string.isEmpty { return string }
+                if let number = item[key] as? NSNumber { return number.stringValue }
+            }
+            return nil
+        }
+        guard var name = text(["username", "Username", "name", "Name"]) else { return nil }
+        if name.hasPrefix("@") { name.removeFirst() }
+
+        var profile = text(["url", "Url", "profileUrl", "ProfileUrl"]).flatMap(URL.init(string:))
+            .flatMap { url -> URL? in
+                guard url.scheme == "https", let host = url.host?.lowercased(), trustedProfileHosts.contains(host) else { return nil }
+                return url
+            }
+        if profile == nil, let id = text(["id", "Id", "uid", "userId"]),
+           let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) {
+            profile = URL(string: "https://spicylyrics.org/uid/\(encoded)")
+        }
+        let avatar = text(["avatar", "Avatar", "avatarUrl"]).flatMap(URL.init(string:)).flatMap { $0.scheme == "https" ? $0 : nil }
+        return LyricsContributor(name: name, profileURL: profile, avatarURL: avatar)
+    }
+
     static func originName(_ raw: String?) -> String {
         let key = (raw ?? "").trimmingCharacters(in: .whitespaces).lowercased()
             .replacingOccurrences(of: "-", with: "_").replacingOccurrences(of: " ", with: "_")
@@ -140,7 +203,8 @@ enum LRCParser {
                                    text: entry.1, romanizedText: nil, lead: [], background: []))
         }
         guard !lines.isEmpty else { return nil }
-        return LyricsDocument(kind: .line, lines: lines, songwriters: [], sourceName: sourceName)
+        return LyricsDocument(kind: .line, lines: lines, songwriters: [], sourceName: sourceName,
+                              credits: LyricsCredits(providedBy: sourceName))
     }
 
     static func plain(_ text: String, sourceName: String) -> LyricsDocument? {
@@ -149,7 +213,8 @@ enum LRCParser {
             .filter { !$0.isEmpty }
             .map { LyricLine(start: 0, end: 0, oppositeAligned: false, text: $0, romanizedText: nil, lead: [], background: []) }
         guard !lines.isEmpty else { return nil }
-        return LyricsDocument(kind: .static, lines: lines, songwriters: [], sourceName: sourceName)
+        return LyricsDocument(kind: .static, lines: lines, songwriters: [], sourceName: sourceName,
+                              credits: LyricsCredits(providedBy: sourceName))
     }
 }
 

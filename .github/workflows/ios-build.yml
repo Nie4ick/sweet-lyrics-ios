@@ -136,6 +136,18 @@ jobs:
       - name: Metal toolchain (needed on Xcode 26+)
         run: xcodebuild -downloadComponent MetalToolchain || true
 
+      # Public client keys from repository secrets (empty when unset, e.g. on fork PRs):
+      # the app then asks for them at runtime instead.
+      - name: Build-time keys
+        env:
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPICY_LYRICS_KEY: ${{ secrets.SPICY_LYRICS_KEY }}
+        run: |
+          {
+            echo "SPOTIFY_CLIENT_ID = $SPOTIFY_CLIENT_ID"
+            echo "SPICY_LYRICS_KEY = $SPICY_LYRICS_KEY"
+          } > Config/Secrets.xcconfig
+
       - name: Generate Xcode project
         run: xcodegen generate
 

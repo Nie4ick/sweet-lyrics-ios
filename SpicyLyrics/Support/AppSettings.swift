@@ -17,6 +17,18 @@ final class AppSettings {
     var showRomanization: Bool { didSet { defaults.set(showRomanization, forKey: Keys.romanization) } }
     var useLRCLibFallback: Bool { didSet { defaults.set(useLRCLibFallback, forKey: Keys.lrclib) } }
     var keepScreenOn: Bool { didSet { defaults.set(keepScreenOn, forKey: Keys.keepScreenOn) } }
+    /// Fade the header and controls out while lyrics play, like Apple Music.
+    var autoHideControls: Bool { didSet { defaults.set(autoHideControls, forKey: Keys.autoHide) } }
+    /// Battery saver: 30 fps lyrics, no line blur, still background.
+    var powerSaving: Bool { didSet { defaults.set(powerSaving, forKey: Keys.powerSaving) } }
+    /// Landscape: show the big artwork / the title and artist next to the lyrics.
+    var landscapeArtwork: Bool { didSet { defaults.set(landscapeArtwork, forKey: Keys.landscapeArtwork) } }
+    var landscapeTitle: Bool { didSet { defaults.set(landscapeTitle, forKey: Keys.landscapeTitle) } }
+
+    /// Keys baked in at build time from `Config/Secrets.xcconfig` or CI secrets (may be empty).
+    /// When present they are fixed: the app ignores anything typed in settings.
+    let bundledSpotifyClientID = BundledKeys.spotifyClientID
+    let bundledSpicyLyricsKey = BundledKeys.spicyLyricsKey.flatMap(AppSettings.clientKey)
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -28,6 +40,10 @@ final class AppSettings {
             Keys.romanization: false,
             Keys.lrclib: true,
             Keys.keepScreenOn: true,
+            Keys.autoHide: true,
+            Keys.landscapeArtwork: true,
+            Keys.powerSaving: false,
+            Keys.landscapeTitle: true,
         ])
         spotifyClientID = defaults.string(forKey: Keys.clientID) ?? ""
         spicyLyricsKey = defaults.string(forKey: Keys.spicyKey) ?? ""
@@ -38,11 +54,28 @@ final class AppSettings {
         showRomanization = defaults.bool(forKey: Keys.romanization)
         useLRCLibFallback = defaults.bool(forKey: Keys.lrclib)
         keepScreenOn = defaults.bool(forKey: Keys.keepScreenOn)
+        autoHideControls = defaults.bool(forKey: Keys.autoHide)
+        powerSaving = defaults.bool(forKey: Keys.powerSaving)
+        landscapeArtwork = defaults.bool(forKey: Keys.landscapeArtwork)
+        landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
 
-    /// The Spicy Lyrics client key when it looks like one (`sl_pk_…`).
+    /// The Client ID built into the app, else the one typed in settings.
+    var effectiveSpotifyClientID: String {
+        bundledSpotifyClientID ?? spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var hasBundledSpotifyClientID: Bool { bundledSpotifyClientID != nil }
+
+    /// The Spicy Lyrics client key built into the app, else the one typed in settings.
     var validSpicyKey: String? {
-        let key = spicyLyricsKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        bundledSpicyLyricsKey ?? Self.clientKey(spicyLyricsKey)
+    }
+
+    var hasBundledSpicyKey: Bool { bundledSpicyLyricsKey != nil }
+
+    private static func clientKey(_ raw: String) -> String? {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.hasPrefix("sl_pk_"), key.count >= 14 else { return nil }
         return key
     }
@@ -57,5 +90,9 @@ final class AppSettings {
         static let romanization = "showRomanization"
         static let lrclib = "useLRCLibFallback"
         static let keepScreenOn = "keepScreenOn"
+        static let autoHide = "autoHideControls"
+        static let powerSaving = "powerSaving"
+        static let landscapeArtwork = "landscapeArtwork"
+        static let landscapeTitle = "landscapeTitle"
     }
 }

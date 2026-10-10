@@ -14,3 +14,9 @@ Payload/
 _ref/
 
 .DS_Store
+
+# Build-time keys (see Config/Secrets.example.xcconfig)
+Config/Secrets.xcconfig
+SpicyLyrics/Generated/
+*.log
+build-check/

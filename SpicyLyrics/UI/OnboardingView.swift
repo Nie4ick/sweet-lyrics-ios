@@ -20,39 +20,43 @@ struct OnboardingView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Подключение Spotify (один раз)")
-                            .font(.headline)
-                        step(1, "Откройте developer.spotify.com/dashboard и создайте приложение (Create app).")
-                        step(2, "В поле Redirect URI добавьте:")
-                        HStack {
-                            Text(SpotifyAuth.redirectURI)
-                                .font(.callout.monospaced())
-                                .textSelection(.enabled)
-                            Spacer()
-                            Button {
-                                UIPasteboard.general.string = SpotifyAuth.redirectURI
-                            } label: {
-                                Image(systemName: "doc.on.doc")
+                    // A Client ID built into the app skips the developer-app setup.
+                    if !settings.hasBundledSpotifyClientID {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Подключение Spotify (один раз)")
+                                .font(.headline)
+                            step(1, "Откройте developer.spotify.com/dashboard и создайте приложение (Create app).")
+                            step(2, "В поле Redirect URI добавьте:")
+                            HStack {
+                                Text(SpotifyAuth.redirectURI)
+                                    .font(.callout.monospaced())
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Button {
+                                    UIPasteboard.general.string = SpotifyAuth.redirectURI
+                                } label: {
+                                    Image(systemName: "doc.on.doc")
+                                }
                             }
-                        }
-                        .padding(12)
-                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                        step(3, "Отметьте Web API, сохраните. В User Management добавьте свой e-mail Spotify.")
-                        step(4, "Скопируйте Client ID и вставьте ниже.")
-                        Link("Открыть Spotify Dashboard", destination: URL(string: "https://developer.spotify.com/dashboard")!)
-                            .font(.callout.weight(.semibold))
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Client ID")
-                            .font(.headline)
-                        TextField("например 3f2a…", text: $settings.spotifyClientID)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.body.monospaced())
                             .padding(12)
                             .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                            step(3, "Отметьте Web API, сохраните. В User Management добавьте свой e-mail Spotify.")
+                            step(4, "Скопируйте Client ID и вставьте ниже.")
+                            Link("Открыть Spotify Dashboard", destination: URL(string: "https://developer.spotify.com/dashboard")!)
+                                .font(.callout.weight(.semibold))
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Client ID")
+                                .font(.headline)
+                            TextField("например 3f2a…", text: $settings.spotifyClientID)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.body.monospaced())
+                                .padding(12)
+                                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+                        }
+
                     }
 
                     if let error {
@@ -74,7 +78,7 @@ struct OnboardingView: View {
                         .background(Color(red: 0.12, green: 0.84, blue: 0.38), in: Capsule())
                         .foregroundStyle(.black)
                     }
-                    .disabled(busy || settings.spotifyClientID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(busy || settings.effectiveSpotifyClientID.isEmpty)
 
                     Text("Приложение не связано со Spotify AB и с авторами Spicy Lyrics. Это неофициальный порт расширения Spicy Lyrics под AGPL-3.0.")
                         .font(.footnote)

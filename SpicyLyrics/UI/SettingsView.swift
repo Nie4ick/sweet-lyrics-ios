@@ -16,12 +16,23 @@ struct SettingsView: View {
                     Toggle("Размытие неактивных строк", isOn: $settings.blurInactiveLines)
                     Toggle("Романизация (если есть)", isOn: $settings.showRomanization)
                     Toggle("Не гасить экран", isOn: $settings.keepScreenOn)
+                    Toggle("Прятать интерфейс во время песни", isOn: $settings.autoHideControls)
+                    Toggle("Экономия батареи", isOn: $settings.powerSaving)
                     VStack(alignment: .leading) {
                         Text("Размер шрифта: \(Int(settings.fontSize))")
                         Slider(value: $settings.fontSize, in: 22...48, step: 1)
                     }
                 } header: {
                     Text("Внешний вид")
+                }
+
+                Section {
+                    Toggle("Обложка", isOn: $settings.landscapeArtwork)
+                    Toggle("Название и исполнитель", isOn: $settings.landscapeTitle)
+                } header: {
+                    Text("Горизонтальный режим")
+                } footer: {
+                    Text("Если выключить и то и другое, текст займёт весь экран, а кнопки будут появляться слева по касанию.")
                 }
 
                 Section {
@@ -37,18 +48,22 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("sl_pk_…", text: $settings.spicyLyricsKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
-                    if !settings.spicyLyricsKey.isEmpty && settings.validSpicyKey == nil {
-                        Text(settings.spicyLyricsKey.hasPrefix("sl_sk_")
-                             ? "Это секретный ключ. Нужен клиентский ключ sl_pk_…"
-                             : "Ключ должен начинаться с sl_pk_")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
+                    if settings.hasBundledSpicyKey {
+                        Label("Ключ Spicy Lyrics встроен в приложение", systemImage: "checkmark.seal.fill")
+                    } else {
+                        TextField("sl_pk_…", text: $settings.spicyLyricsKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                        if !settings.spicyLyricsKey.isEmpty && settings.validSpicyKey == nil {
+                            Text(settings.spicyLyricsKey.hasPrefix("sl_sk_")
+                                 ? "Это секретный ключ. Нужен клиентский ключ sl_pk_…"
+                                 : "Ключ должен начинаться с sl_pk_")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                        Link("Получить ключ Spicy Lyrics", destination: URL(string: "https://developers.spicylyrics.org")!)
                     }
-                    Link("Получить ключ Spicy Lyrics", destination: URL(string: "https://developers.spicylyrics.org")!)
                     Toggle("Запасной источник LRCLIB", isOn: $settings.useLRCLibFallback)
                     Button("Перезагрузить текст") {
                         player.loadLyrics(force: true)
@@ -66,10 +81,12 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("Client ID", text: $settings.spotifyClientID)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
+                    if !settings.hasBundledSpotifyClientID {
+                        TextField("Client ID", text: $settings.spotifyClientID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                    }
                     Button("Выйти из Spotify", role: .destructive) {
                         auth.logOut()
                         dismiss()

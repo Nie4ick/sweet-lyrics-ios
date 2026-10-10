@@ -65,7 +65,7 @@ final class SpotifyAuth: NSObject, ObservableObject {
     // MARK: Login
 
     func logIn() async throws {
-        let clientID = settings.spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientID = settings.effectiveSpotifyClientID
         guard !clientID.isEmpty else { throw SpotifyAuthError.missingClientID }
 
         let verifier = Self.randomVerifier()
@@ -128,7 +128,7 @@ final class SpotifyAuth: NSObject, ObservableObject {
             logOut()
             throw SpotifyAuthError.notLoggedIn
         }
-        let clientID = settings.spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clientID = settings.effectiveSpotifyClientID
         let task = Task { [weak self] () async throws -> SpotifyTokens in
             guard let self else { throw CancellationError() }
             return try await self.requestToken(form: [

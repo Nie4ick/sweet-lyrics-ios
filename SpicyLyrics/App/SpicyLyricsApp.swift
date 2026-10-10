@@ -6,6 +6,7 @@ struct SpicyLyricsApp: App {
     @State private var settings: AppSettings
     @StateObject private var auth: SpotifyAuth
     @State private var player: PlayerModel
+    @State private var performance = PerformanceMonitor()
 
     init() {
         let settings = AppSettings()
@@ -22,6 +23,7 @@ struct SpicyLyricsApp: App {
             RootView()
                 .environment(settings)
                 .environment(player)
+                .environment(performance)
                 .environmentObject(auth)
                 .preferredColorScheme(.dark)
                 .tint(.white)
