@@ -48,6 +48,8 @@ struct PlaybackSnapshot {
     var deviceName: String?
     /// Spotify Connect device type, e.g. "Smartphone", "Computer", "Speaker".
     var deviceType: String?
+    /// `timestamp`: when the playback state last changed (play, pause, seek, new song), Unix seconds.
+    var stateChangedAt: Double?
 }
 
 enum SpotifyAPIError: LocalizedError {
@@ -156,7 +158,8 @@ final class SpotifyAPI {
             measuredAt: measuredAt,
             contextURI: payload.context?.uri,
             deviceName: payload.device?.name,
-            deviceType: payload.device?.type
+            deviceType: payload.device?.type,
+            stateChangedAt: payload.timestamp.map { Double($0) / 1000 }
         )
     }
 
@@ -372,6 +375,7 @@ final class SpotifyAPI {
     private struct PlaybackPayload: Decodable {
         struct Device: Decodable { let name: String?; let type: String? }
         let progress_ms: Int?
+        let timestamp: Int64?
         let is_playing: Bool
         let currently_playing_type: String?
         let item: ItemPayload?
