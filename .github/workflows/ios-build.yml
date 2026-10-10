@@ -1,9 +1,9 @@
 name: Build iOS app
 
 # Channels:
-#   pull_request        → "pr" build: compile check + IPA artifact, nothing is published.
-#   push to main        → "alpha": pre-release vX.Y.Z-alpha.N (X.Y.Z = the next patch release).
-#   manual run on main  → "release": stable release vX.Y.Z, bumped from the latest stable tag.
+#   pull_request        в†’ "pr" build: compile check + IPA artifact, nothing is published.
+#   push to main        в†’ "alpha": pre-release vX.Y.Z-alpha.N (X.Y.Z = the next patch release).
+#   manual run on main  в†’ "release": stable release vX.Y.Z, bumped from the latest stable tag.
 #
 # Versions live in git tags (vX.Y.Z). MARKETING_VERSION in project.yml is the floor: raise it
 # there to jump to a new version line (e.g. 1.0.0). The build number is the workflow run number,
@@ -46,6 +46,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Test AltStore channels
+        run: python3 -m unittest discover -s scripts -p 'test_altstore_source.py'
 
       - name: Work out the version
         id: v
@@ -214,20 +217,6 @@ jobs:
           gh release create "$TAG" SpicyLyrics-*-unsigned.ipa "${args[@]}"
           echo "Published [$TAG](https://github.com/$GH_REPO/releases/tag/$TAG) (build $BUILD)" >> "$GITHUB_STEP_SUMMARY"
 
-      # AltStore / SideStore source, attached to every stable release so its URL stays
-      # .../releases/latest/download/altstore-source.json
-      - uses: actions/checkout@v4
-        if: needs.version.outputs.channel == 'release'
-        with:
-          path: repo
-
-      - name: Publish AltStore source
-        if: needs.version.outputs.channel == 'release'
-        run: |
-          set -euo pipefail
-          bash repo/scripts/altstore-source.sh altstore-source.json
-          gh release upload "$TAG" altstore-source.json --clobber
-
       - name: Prune old alphas
         if: needs.version.outputs.channel == 'alpha'
         run: |
@@ -238,3 +227,16 @@ jobs:
             echo "Removing $old"
             gh release delete "$old" --yes --cleanup-tag
           done
+
+      # Update both permanent URLs after pruning, so neither source lists deleted IPAs.
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Publish stable and testing AltStore sources
+        run: |
+          set -euo pipefail
+          python3 repo/scripts/altstore-source.py altstore-source.json --channel stable
+          python3 repo/scripts/altstore-source.py altstore-source-testing.json --channel testing
+          latest=$(gh release view --json tagName --jq '.tagName')
+          gh release upload "$latest" altstore-source.json altstore-source-testing.json --clobber

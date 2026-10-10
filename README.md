@@ -97,11 +97,18 @@ Never put a Spotify client secret or a Spicy Lyrics secret key (`sl_sk_…`) the
 
 ## Installing with AltStore or SideStore
 
-Add this source in AltStore or SideStore; new stable releases then show up as updates:
+Choose one update channel in AltStore or SideStore:
 
-```
-https://github.com/Sppqq/SpicyLyrics/releases/latest/download/altstore-source.json
-```
+| Channel | Source URL |
+| --- | --- |
+| Stable | https://github.com/Sppqq/SpicyLyrics/releases/latest/download/altstore-source.json |
+| Alpha & Beta | https://github.com/Sppqq/SpicyLyrics/releases/latest/download/altstore-source-testing.json |
+
+Both sources refresh after each published build. The testing source includes alpha,
+beta and stable releases, with the newest version first. Beta builds will appear when
+published; currently testing builds are alphas. Both channels install the same app,
+so choose one source for its updates rather than expecting two separate installations.
+The original stable source URL remains unchanged.
 
 ## Building
 
