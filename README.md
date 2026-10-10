@@ -26,14 +26,19 @@ These features are implemented in the prototype and still need testing and refin
 | Lyrics sources | Spicy Lyrics API with [LRCLIB](https://lrclib.net) as a fallback |
 | Romanization | Supported when returned by the API (`TransliteratedText`) |
 | Seeking | Tap a lyric line to seek to it; requires Spotify Premium |
+| Track picker | Tap the track header (or the list button) to jump ahead in the queue, replay something from your history, or search; swipe the header sideways to skip. Requires Spotify Premium |
 
 ## Spotify Connection
 
 The app connects through the official **Spotify Web API**:
 
 - OAuth sign-in using Authorization Code + PKCE, without a client secret.
-- Requests to `/me/player/currently-playing` once per second while the app is open.
-  Between requests, playback position is estimated locally with smooth drift correction.
+- Requests to `/me/player` once per second while the app is open. Between requests,
+  playback position is estimated locally; small differences are blended in gradually
+  (median of recent polls) so words never jump backwards, and a position that stops moving
+  is treated as paused even if Spotify still reports `is_playing`.
+- Transient connection failures (TLS handshake errors, dropped VPN connections) are retried
+  on a fresh connection.
 - Play/pause, next/previous, and seeking through the Web API; these controls require
   **Spotify Premium**.
 
@@ -74,13 +79,28 @@ Then build and run the app on your iPhone.
 
 ### Without a Mac: GitHub Actions and Sideloading
 
-1. Push the project to your GitHub repository.
-2. The workflow in `.github/workflows/ios-build.yml` is configured to build an
-   **unsigned** `SpicyLyrics-unsigned.ipa` on a macOS runner. After a successful run,
-   download it from *Actions → latest run → Artifacts*.
-3. Sign and install the IPA using [Sideloadly](https://sideloadly.io) or
-   [AltStore](https://altstore.io) with your Apple ID. With a free account, the original
-   setup instructions call for refreshing the installation every seven days.
+The workflow in `.github/workflows/ios-build.yml` builds an **unsigned** IPA on a macOS
+runner. What it publishes depends on how it runs:
+
+| Trigger | Channel | Result |
+| --- | --- | --- |
+| Pull request | `pr` | Compile check; IPA only as a run artifact |
+| Push or merge to `main` | `alpha` | Pre-release `vX.Y.Z-alpha.N` under *Releases* (the last 10 are kept) |
+| *Actions → Build iOS app → Run workflow* on `main` | `release` | Stable release `vX.Y.Z` under *Releases* |
+
+Versioning:
+
+- Stable versions are git tags `vX.Y.Z`. A manual run raises the latest one by the chosen
+  part (`patch` by default, or `minor` / `major`), or uses the exact version you type in.
+- Alphas carry the version of the next patch release plus the run number, e.g. `v0.1.1-alpha.57`.
+- `MARKETING_VERSION` in `project.yml` is the floor: with no tags yet the first release uses it,
+  and raising it (say to `1.0.0`) moves every following build to that line.
+- The build number (`CFBundleVersion`) is the workflow run number, so it always grows.
+- The app shows its version and channel under *Settings → About*.
+
+To install, download the IPA from the release (or the run's artifacts) and sign it with
+[Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io) using your Apple ID.
+With a free account, the installation has to be refreshed every seven days.
 
 ## Project Structure
 

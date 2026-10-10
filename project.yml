@@ -11,6 +11,8 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Overridden by CI: alpha / release / pr. Local builds are "dev".
+    SPICY_CHANNEL: dev
 
 targets:
   SpicyLyrics:
@@ -35,6 +37,7 @@ targets:
         CFBundleDisplayName: Spicy Lyrics
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        SpicyLyricsChannel: $(SPICY_CHANNEL)
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIStatusBarStyle: UIStatusBarStyleLightContent

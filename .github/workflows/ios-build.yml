@@ -1,14 +1,129 @@
 name: Build iOS app
 
+# Channels:
+#   pull_request        → "pr" build: compile check + IPA artifact, nothing is published.
+#   push to main        → "alpha": pre-release vX.Y.Z-alpha.N (X.Y.Z = the next patch release).
+#   manual run on main  → "release": stable release vX.Y.Z, bumped from the latest stable tag.
+#
+# Versions live in git tags (vX.Y.Z). MARKETING_VERSION in project.yml is the floor: raise it
+# there to jump to a new version line (e.g. 1.0.0). The build number is the workflow run number,
+# so it always grows.
+
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to raise"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Exact version instead (X.Y.Z), optional"
+        type: string
+        required: false
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.v.outputs.channel }}
+      version: ${{ steps.v.outputs.version }}
+      marketing: ${{ steps.v.outputs.marketing }}
+      build: ${{ steps.v.outputs.build }}
+      tag: ${{ steps.v.outputs.tag }}
+      previous: ${{ steps.v.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: v
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BUMP: ${{ inputs.bump }}
+          EXACT: ${{ inputs.version }}
+          RUN: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          case "$EVENT" in
+            workflow_dispatch)
+              if [ "$REF" != "refs/heads/main" ]; then
+                echo "::error::Releases are only built from main (this run is on $REF)."
+                exit 1
+              fi
+              channel=release ;;
+            push) channel=alpha ;;
+            *) channel=pr ;;
+          esac
+
+          # Latest stable tag (vX.Y.Z, no suffix) and the floor from project.yml.
+          latest=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -V | tail -n1 || true)
+          floor=$(sed -nE 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"?([0-9]+\.[0-9]+\.[0-9]+)"?.*/\1/p' project.yml | head -n1)
+
+          bump() {
+            IFS=. read -r major minor patch <<< "$1"
+            case "$2" in
+              major) echo "$((major + 1)).0.0" ;;
+              minor) echo "$major.$((minor + 1)).0" ;;
+              *)     echo "$major.$minor.$((patch + 1))" ;;
+            esac
+          }
+          max() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1; }
+
+          if [ "$channel" = release ] && [ -n "${EXACT:-}" ]; then
+            if ! echo "$EXACT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::Version must look like 1.2.3 (got '$EXACT')."
+              exit 1
+            fi
+            next="$EXACT"
+          elif [ -z "$latest" ]; then
+            next="$floor"
+          else
+            kind=patch
+            [ "$channel" = release ] && kind="${BUMP:-patch}"
+            next=$(max "$(bump "$latest" "$kind")" "$floor")
+          fi
+
+          case "$channel" in
+            release) version="$next" ;;
+            alpha)   version="$next-alpha.$RUN" ;;
+            *)       version="$next-pr.$RUN" ;;
+          esac
+          tag="v$version"
+
+          if [ "$channel" != pr ] && git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists."
+            exit 1
+          fi
+
+          {
+            echo "channel=$channel"
+            echo "version=$version"
+            echo "marketing=$next"
+            echo "build=$RUN"
+            echo "tag=$tag"
+            echo "previous=${latest:+v$latest}"
+          } >> "$GITHUB_OUTPUT"
+          echo "### $channel build $version (build $RUN)" >> "$GITHUB_STEP_SUMMARY"
+
   build:
+    needs: version
     runs-on: macos-15
+    env:
+      IPA: SpicyLyrics-${{ needs.version.outputs.version }}-unsigned.ipa
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +149,9 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            MARKETING_VERSION="${{ needs.version.outputs.marketing }}" \
+            CURRENT_PROJECT_VERSION="${{ needs.version.outputs.build }}" \
+            SPICY_CHANNEL="${{ needs.version.outputs.channel }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -43,9 +161,54 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/SpicyLyrics.app Payload/
-          zip -qry SpicyLyrics-unsigned.ipa Payload
+          zip -qry "$IPA" Payload
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SpicyLyrics-unsigned-ipa
-          path: SpicyLyrics-unsigned.ipa
+          name: SpicyLyrics-${{ needs.version.outputs.version }}
+          path: ${{ env.IPA }}
+
+  publish:
+    needs: [version, build]
+    if: needs.version.outputs.channel != 'pr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      CHANNEL: ${{ needs.version.outputs.channel }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      BUILD: ${{ needs.version.outputs.build }}
+      PREVIOUS: ${{ needs.version.outputs.previous }}
+      KEEP_ALPHAS: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: SpicyLyrics-${{ needs.version.outputs.version }}
+
+      - name: Create GitHub release
+        run: |
+          set -euo pipefail
+          args=(--target "$GITHUB_SHA" --generate-notes)
+          if [ "$CHANNEL" = alpha ]; then
+            args+=(--prerelease --latest=false --title "Alpha $VERSION")
+          else
+            args+=(--latest --title "Spicy Lyrics $VERSION")
+            # Notes for a stable release cover everything since the previous stable one.
+            [ -n "$PREVIOUS" ] && args+=(--notes-start-tag "$PREVIOUS")
+          fi
+          gh release create "$TAG" SpicyLyrics-*-unsigned.ipa "${args[@]}"
+          echo "Published [$TAG](https://github.com/$GH_REPO/releases/tag/$TAG) (build $BUILD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prune old alphas
+        if: needs.version.outputs.channel == 'alpha'
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq "[.[] | select(.tagName | test(\"-alpha\\\\.\"))] | sort_by(.createdAt) | reverse | .[$KEEP_ALPHAS:] | .[].tagName" |
+          while read -r old; do
+            echo "Removing $old"
+            gh release delete "$old" --yes --cleanup-tag
+          done
