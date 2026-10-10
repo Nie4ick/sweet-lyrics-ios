@@ -16,6 +16,7 @@ struct SettingsView: View {
                     Toggle("Размытие неактивных строк", isOn: $settings.blurInactiveLines)
                     Toggle("Романизация (если есть)", isOn: $settings.showRomanization)
                     Toggle("Не гасить экран", isOn: $settings.keepScreenOn)
+                    Toggle("Прятать интерфейс во время песни", isOn: $settings.autoHideControls)
                     VStack(alignment: .leading) {
                         Text("Размер шрифта: \(Int(settings.fontSize))")
                         Slider(value: $settings.fontSize, in: 22...48, step: 1)
@@ -37,7 +38,8 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("sl_pk_…", text: $settings.spicyLyricsKey)
+                    TextField(settings.hasBundledSpicyKey ? "Встроенный ключ (можно заменить)" : "sl_pk_…",
+                              text: $settings.spicyLyricsKey)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())
@@ -66,7 +68,8 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField("Client ID", text: $settings.spotifyClientID)
+                    TextField(settings.hasBundledSpotifyClientID ? "Встроенный Client ID (можно заменить)" : "Client ID",
+                              text: $settings.spotifyClientID)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.body.monospaced())

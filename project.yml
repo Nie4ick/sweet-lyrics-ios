@@ -19,6 +19,9 @@ targets:
     type: application
     platform: iOS
     scheme: {}
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
     sources:
       - path: SpicyLyrics
     settings:
@@ -38,6 +41,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         SpicyLyricsChannel: $(SPICY_CHANNEL)
+        SpicyBundledSpotifyClientID: $(SPOTIFY_CLIENT_ID)
+        SpicyBundledLyricsKey: $(SPICY_LYRICS_KEY)
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIStatusBarStyle: UIStatusBarStyleLightContent

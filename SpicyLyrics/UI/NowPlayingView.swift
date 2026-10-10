@@ -1,39 +1,52 @@
-import QuartzCore
 import SwiftUI
 
-/// The main screen: background, header, lyrics and the playback bar.
+/// The main screen, laid out like Apple Music's lyrics view: header and controls float over
+/// full-height lyrics and fade away while a song plays. Landscape puts artwork and controls on
+/// the left, lyrics on the right.
 struct NowPlayingView: View {
     @Environment(PlayerModel.self) private var player
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var auth: SpotifyAuth
     @State private var showSettings = false
     @State private var showPicker = false
-    @State private var showControls = true
+    @State private var chromeVisible = true
+    /// Bumped on every touch; restarts the auto-hide countdown.
+    @State private var interactionTick = 0
     @State private var headerSwipe: CGFloat = 0
+    @State private var headerHeight: CGFloat = 76
+    @State private var controlsHeight: CGFloat = 250
+
+    private static let autoHideDelay: Duration = .seconds(4)
+    private static let chromeAnimation = Animation.easeInOut(duration: 0.45)
 
     var body: some View {
-        ZStack {
-            DynamicBackground(
-                image: settings.dynamicBackground ? player.backgroundArtwork : nil,
-                imageID: player.artworkID,
-                animated: settings.dynamicBackground
-            )
+        GeometryReader { geometry in
+            let landscape = geometry.size.width > geometry.size.height && geometry.size.width > 560
+            ZStack {
+                DynamicBackground(
+                    image: settings.dynamicBackground ? player.backgroundArtwork : nil,
+                    imageID: player.artworkID,
+                    animated: settings.dynamicBackground
+                )
 
-            VStack(spacing: 0) {
-                header
-                    .padding(.horizontal, 20)
-                    .padding(.top, 8)
-
-                lyricsArea
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                if showControls {
-                    PlaybackBar()
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 8)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                if landscape {
+                    landscapeLayout(geometry.size)
+                } else {
+                    portraitLayout(geometry.size)
                 }
             }
+        }
+        .statusBarHidden(!chromeVisible)
+        .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
+        .task(id: AutoHideKey(tick: interactionTick, eligible: canAutoHide)) {
+            guard canAutoHide else { return }
+            try? await Task.sleep(for: Self.autoHideDelay)
+            guard !Task.isCancelled, canAutoHide else { return }
+            withAnimation(Self.chromeAnimation) { chromeVisible = false }
+        }
+        .onChange(of: player.isPlaying) { _, playing in
+            // Pausing brings the controls back, like Apple Music.
+            if !playing { showChrome() }
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -59,66 +72,131 @@ struct NowPlayingView: View {
         }
     }
 
+    // MARK: Chrome visibility
+
+    private struct AutoHideKey: Hashable {
+        var tick: Int
+        var eligible: Bool
+    }
+
+    private var lyricsLoaded: Bool {
+        if case .loaded = player.lyricsState { return true }
+        return false
+    }
+
+    private var canAutoHide: Bool {
+        settings.autoHideControls && chromeVisible && player.isPlaying && lyricsLoaded
+            && !showSettings && !showPicker
+    }
+
+    private func showChrome() {
+        interactionTick += 1
+        guard !chromeVisible else { return }
+        withAnimation(Self.chromeAnimation) { chromeVisible = true }
+    }
+
+    private func toggleChrome() {
+        interactionTick += 1
+        withAnimation(Self.chromeAnimation) { chromeVisible.toggle() }
+    }
+
+    private func hideChrome() {
+        withAnimation(Self.chromeAnimation) { chromeVisible = false }
+    }
+
+    // MARK: Portrait
+
+    private func portraitLayout(_ size: CGSize) -> some View {
+        ZStack {
+            lyricsArea(
+                topInset: chromeVisible ? headerHeight : 0,
+                bottomInset: chromeVisible ? controlsHeight : 0,
+                horizontalPadding: 28,
+                focusAnchor: 0.3
+            )
+
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 22)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
+                    .opacity(chromeVisible ? 1 : 0)
+                    .offset(y: chromeVisible ? 0 : -24)
+
+                Spacer(minLength: 0)
+
+                controls
+                    .padding(.horizontal, 26)
+                    .padding(.bottom, 6)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { controlsHeight = $0 }
+                    .opacity(chromeVisible ? 1 : 0)
+                    .offset(y: chromeVisible ? 0 : 40)
+            }
+            .allowsHitTesting(chromeVisible)
+        }
+    }
+
+    // MARK: Landscape
+
+    private func landscapeLayout(_ size: CGSize) -> some View {
+        let column = min(size.width * 0.4, 420)
+        let artworkSide = min(column - 40, size.height * (chromeVisible ? 0.42 : 0.62))
+        return HStack(spacing: 0) {
+            VStack(spacing: 18) {
+                Spacer(minLength: 0)
+                artwork(side: artworkSide, cornerRadius: 12)
+                    .scaleEffect(player.isPlaying ? 1 : 0.86)
+                    .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+                    .animation(.spring(response: 0.5, dampingFraction: 0.75), value: player.isPlaying)
+                    .onTapGesture { toggleChrome() }
+
+                HStack(alignment: .center, spacing: 10) {
+                    titleBlock
+                    Spacer(minLength: 0)
+                    moreMenu
+                        .opacity(chromeVisible ? 1 : 0)
+                }
+                .frame(width: artworkSide)
+
+                if chromeVisible {
+                    controls
+                        .frame(width: max(artworkSide, 280))
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+                Spacer(minLength: 0)
+            }
+            .frame(width: column)
+            .padding(.leading, 12)
+
+            lyricsArea(topInset: 0, bottomInset: 0, horizontalPadding: 24, focusAnchor: 0.38)
+        }
+    }
+
     // MARK: Header
 
     private var header: some View {
         HStack(spacing: 12) {
             trackInfo
-            Spacer(minLength: 8)
-
-            Button {
-                showPicker = true
-            } label: {
-                Image(systemName: "music.note.list")
-                    .font(.title2)
-            }
-            Button {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.9)) { showControls.toggle() }
-            } label: {
-                Image(systemName: showControls ? "chevron.down.circle" : "chevron.up.circle")
-                    .font(.title2)
-            }
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.title2)
-            }
+            moreMenu
         }
         .foregroundStyle(.white)
     }
 
-    /// Artwork and title. Tap to pick a track, swipe sideways to skip.
+    /// Small artwork and title. Tap to pick a track, swipe sideways to skip.
     private var trackInfo: some View {
         HStack(spacing: 12) {
-            Group {
-                if let artwork = player.artwork {
-                    Image(uiImage: artwork).resizable().scaledToFill()
-                } else {
-                    Image(systemName: "music.note")
-                        .font(.title2)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(.white.opacity(0.1))
-                }
-            }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .lineLimit(1)
-            }
+            artwork(side: 54, cornerRadius: 6)
+            titleBlock
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .offset(x: headerSwipe)
         .opacity(1 - min(Double(abs(headerSwipe)) / 160, 0.6))
-        .onTapGesture { showPicker = true }
+        .onTapGesture {
+            showChrome()
+            showPicker = true
+        }
         .gesture(
             DragGesture(minimumDistance: 20)
                 .onChanged { value in
@@ -130,11 +208,92 @@ struct NowPlayingView: View {
                     if abs(width) > 70, abs(width) > abs(value.translation.height) {
                         if width < 0 { player.next() } else { player.previous() }
                     }
+                    showChrome()
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { headerSwipe = 0 }
                 }
         )
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Выбрать трек. Смахните влево или вправо, чтобы переключить трек.")
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .lineLimit(1)
+            Text(subtitle)
+                .font(.system(size: 17))
+                .foregroundStyle(.white.opacity(0.6))
+                .lineLimit(1)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func artwork(side: CGFloat, cornerRadius: CGFloat) -> some View {
+        Group {
+            if let artwork = player.artwork {
+                Image(uiImage: artwork).resizable().scaledToFill()
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: side * 0.35))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(.white.opacity(0.1))
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    /// Apple Music's "•••" button.
+    private var moreMenu: some View {
+        Menu {
+            Button {
+                showPicker = true
+            } label: {
+                Label("Выбрать трек", systemImage: "music.note.list")
+            }
+            if let url = spotifyURL {
+                Button {
+                    UIApplication.shared.open(url)
+                } label: {
+                    Label("Открыть в Spotify", systemImage: "arrow.up.forward.app")
+                }
+            }
+            Button {
+                player.loadLyrics(force: true)
+            } label: {
+                Label("Перезагрузить текст", systemImage: "arrow.clockwise")
+            }
+            Divider()
+            Button {
+                showSettings = true
+            } label: {
+                Label("Настройки", systemImage: "gearshape")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(.white.opacity(0.18), in: Circle())
+        }
+        .simultaneousGesture(TapGesture().onEnded { showChrome() })
+    }
+
+    private var spotifyURL: URL? {
+        guard let track = player.track else { return URL(string: "spotify:") }
+        return URL(string: track.uri) ?? URL(string: "spotify:")
+    }
+
+    private var controls: some View {
+        PlaybackBar(
+            onInteraction: { showChrome() },
+            onShowQueue: { showPicker = true },
+            onHideControls: { hideChrome() }
+        )
+        .foregroundStyle(.white)
     }
 
     private var title: String {
@@ -158,14 +317,23 @@ struct NowPlayingView: View {
     // MARK: Lyrics
 
     @ViewBuilder
-    private var lyricsArea: some View {
+    private func lyricsArea(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat,
+                            focusAnchor: CGFloat) -> some View {
         switch player.lyricsState {
         case .loaded(let lyrics):
-            LyricsView(lyrics: lyrics, player: player, settings: settings)
-                .id(player.lyricsRevision)
-                .transition(.opacity)
+            LyricsView(
+                lyrics: lyrics, player: player, settings: settings,
+                topInset: topInset, bottomInset: bottomInset,
+                horizontalPadding: horizontalPadding, focusAnchor: focusAnchor,
+                onInteraction: { showChrome() },
+                onBackgroundTap: { toggleChrome() }
+            )
+            .id(player.lyricsRevision)
+            .transition(.opacity)
         case .loading:
             LyricsSkeleton()
+                .padding(.top, topInset)
+                .frame(maxHeight: .infinity, alignment: .top)
         case .notFound:
             message(icon: "text.badge.xmark", title: "Текст не найден",
                     detail: "Для этого трека пока нет текста ни в Spicy Lyrics, ни в LRCLIB.",
@@ -198,6 +366,7 @@ struct NowPlayingView: View {
         }
         .foregroundStyle(.white)
         .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func message(icon: String, title: String, detail: String?, retry: Bool) -> some View {
@@ -220,6 +389,7 @@ struct NowPlayingView: View {
         }
         .foregroundStyle(.white)
         .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -240,77 +410,5 @@ private struct LyricsSkeleton: View {
         .onAppear {
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
         }
-    }
-}
-
-// MARK: - Playback bar
-
-struct PlaybackBar: View {
-    @Environment(PlayerModel.self) private var player
-    @State private var dragFraction: Double?
-
-    var body: some View {
-        VStack(spacing: 10) {
-            TimelineView(.periodic(from: .now, by: 0.25)) { _ in
-                let duration = max(player.track?.duration ?? 0, 0.001)
-                let position = player.playbackPosition(at: CACurrentMediaTime())
-                let fraction = dragFraction ?? clamp(position / duration, 0, 1)
-                VStack(spacing: 6) {
-                    GeometryReader { geometry in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.white.opacity(0.2))
-                            Capsule().fill(.white)
-                                .frame(width: geometry.size.width * fraction)
-                        }
-                        .frame(height: dragFraction == nil ? 4 : 8)
-                        .frame(maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in
-                                    dragFraction = Double(clamp(value.location.x / max(geometry.size.width, 1), 0, 1))
-                                }
-                                .onEnded { value in
-                                    let f = Double(clamp(value.location.x / max(geometry.size.width, 1), 0, 1))
-                                    player.seek(to: f * duration)
-                                    dragFraction = nil
-                                }
-                        )
-                    }
-                    .frame(height: 20)
-                    .animation(.easeOut(duration: 0.15), value: dragFraction == nil)
-
-                    HStack {
-                        Text(Self.format(fraction * duration))
-                        Spacer()
-                        Text("-" + Self.format(duration - fraction * duration))
-                    }
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.7))
-                }
-            }
-            .disabled(player.track == nil)
-
-            HStack(spacing: 44) {
-                Button { player.previous() } label: {
-                    Image(systemName: "backward.fill").font(.title2)
-                }
-                Button { player.togglePlay() } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 34))
-                        .frame(width: 44)
-                        .contentTransition(.symbolEffect(.replace))
-                }
-                Button { player.next() } label: {
-                    Image(systemName: "forward.fill").font(.title2)
-                }
-            }
-            .foregroundStyle(.white)
-        }
-    }
-
-    static func format(_ seconds: Double) -> String {
-        let total = max(0, Int(seconds.rounded(.down)))
-        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }

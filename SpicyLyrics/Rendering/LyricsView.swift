@@ -6,17 +6,38 @@ struct LyricsView: View {
     let lyrics: PreparedLyrics
     let player: PlayerModel
     let settings: AppSettings
+    /// Height (points) hidden under the header / controls; lyrics fade out before reaching them.
+    var topInset: CGFloat = 0
+    var bottomInset: CGFloat = 0
+    var horizontalPadding: CGFloat = 24
+    /// Where the active line settles, as a fraction of the view height.
+    var focusAnchor: CGFloat = 0.3
+    /// Any touch or scroll on the lyrics (shows the controls again).
+    var onInteraction: () -> Void = {}
+    /// A tap on empty space between lines (toggles the controls).
+    var onBackgroundTap: () -> Void = {}
 
     @State private var animator: LyricsAnimator
     @State private var userScrolling = false
     @State private var resumeAutoScrollAt: Date = .distantPast
 
-    init(lyrics: PreparedLyrics, player: PlayerModel, settings: AppSettings) {
+    init(lyrics: PreparedLyrics, player: PlayerModel, settings: AppSettings,
+         topInset: CGFloat = 0, bottomInset: CGFloat = 0, horizontalPadding: CGFloat = 24,
+         focusAnchor: CGFloat = 0.3,
+         onInteraction: @escaping () -> Void = {}, onBackgroundTap: @escaping () -> Void = {}) {
         self.lyrics = lyrics
         self.player = player
         self.settings = settings
+        self.topInset = topInset
+        self.bottomInset = bottomInset
+        self.horizontalPadding = horizontalPadding
+        self.focusAnchor = focusAnchor
+        self.onInteraction = onInteraction
+        self.onBackgroundTap = onBackgroundTap
         _animator = State(initialValue: LyricsAnimator(lyrics: lyrics))
     }
+
+    private var anchor: UnitPoint { UnitPoint(x: 0.5, y: focusAnchor) }
 
     /// Always the animator's copy, so line indices and visuals can never disagree.
     private var shown: PreparedLyrics { animator.lyrics }
@@ -40,6 +61,7 @@ struct LyricsView: View {
                                     .equatable()
                                     .contentShape(Rectangle())
                                     .onTapGesture {
+                                        onInteraction()
                                         guard shown.kind != .static else { return }
                                         resumeAutoScrollAt = .distantPast
                                         player.seek(to: max(0, line.start - settings.timingOffsetMs / 1000))
@@ -49,27 +71,33 @@ struct LyricsView: View {
                             LyricsCreditsView(lyrics: shown)
                                 .padding(.top, typography.fontSize)
                         }
-                        .padding(.horizontal, 24)
-                        .padding(.top, geometry.size.height * 0.3)
-                        .padding(.bottom, geometry.size.height * 0.6)
+                        .padding(.horizontal, horizontalPadding)
+                        .padding(.top, geometry.size.height * focusAnchor)
+                        .padding(.bottom, geometry.size.height * (1 - focusAnchor))
+                        .contentShape(Rectangle())
+                        .onTapGesture { onBackgroundTap() }
                         .onChange(of: focus) { _, newFocus in
                             guard shown.kind != .static, !userScrolling, Date() >= resumeAutoScrollAt else { return }
                             withAnimation(.spring(response: 0.6, dampingFraction: 0.88)) {
-                                proxy.scrollTo(newFocus, anchor: UnitPoint(x: 0.5, y: 0.3))
+                                proxy.scrollTo(newFocus, anchor: anchor)
                             }
                         }
                         .task {
                             guard shown.kind != .static else { return }
                             try? await Task.sleep(for: .milliseconds(80))
-                            proxy.scrollTo(animator.focusIndex, anchor: UnitPoint(x: 0.5, y: 0.3))
+                            proxy.scrollTo(animator.focusIndex, anchor: anchor)
                         }
                     }
                 }
                 .modifier(ScrollInteractionObserver { interacting in
                     userScrolling = interacting
-                    if !interacting { resumeAutoScrollAt = Date().addingTimeInterval(2.5) }
+                    if interacting {
+                        onInteraction()
+                    } else {
+                        resumeAutoScrollAt = Date().addingTimeInterval(2.5)
+                    }
                 })
-                .mask(EdgeFade())
+                .mask(EdgeFade(top: topInset, bottom: bottomInset))
             }
         }
     }
@@ -103,19 +131,22 @@ private struct ScrollInteractionObserver: ViewModifier {
     }
 }
 
-/// Soft fade at the top and bottom like the extension's `--ImageMask`.
+/// Soft fade at the top and bottom like the extension's `--ImageMask`. The clear bands follow the
+/// header and controls, so lyrics never run underneath them (and animate with them).
 private struct EdgeFade: View {
+    var top: CGFloat
+    var bottom: CGFloat
+
     var body: some View {
-        LinearGradient(
-            stops: [
-                .init(color: .clear, location: 0),
-                .init(color: .black, location: 0.12),
-                .init(color: .black, location: 0.82),
-                .init(color: .clear, location: 1),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+        VStack(spacing: 0) {
+            Color.clear.frame(height: max(0, top))
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: 56)
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 72)
+            Color.clear.frame(height: max(0, bottom))
+        }
     }
 }
 
