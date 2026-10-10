@@ -68,8 +68,8 @@ struct LyricsView: View {
                                     }
                                     .id(line.id)
                             }
-                            LyricsCreditsView(lyrics: shown)
-                                .padding(.top, typography.fontSize)
+                            LyricsCreditsView(lyrics: shown, lyricSize: typography.fontSize)
+                                .padding(.top, typography.fontSize * 0.45)
                         }
                         .padding(.horizontal, horizontalPadding)
                         .padding(.top, geometry.size.height * focusAnchor)
@@ -150,18 +150,76 @@ private struct EdgeFade: View {
     }
 }
 
+/// The block after the last line, in Spicy Lyrics' order and wording (`ApplyLyricsCredits.ts`,
+/// `ApplyProvider.ts`, `ApplyIsByCommunity.tsx`): writers, provider, then the community sync's
+/// maker and uploader. Sizes follow Mixed.css relative to the lyric size.
 private struct LyricsCreditsView: View {
     let lyrics: PreparedLyrics
+    let lyricSize: CGFloat
+
+    private var credits: LyricsCredits { lyrics.credits }
+    /// A little larger than on desktop, for a phone screen (as the Android port does).
+    private var small: CGFloat { max(12, lyricSize * 0.34 * 1.2) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: lyricSize * 0.25) {
             if !lyrics.songwriters.isEmpty {
-                Text("Авторы: " + lyrics.songwriters.joined(separator: ", "))
+                Text("Written by: " + lyrics.songwriters.joined(separator: ", "))
+                    .font(.system(size: max(14, lyricSize * 0.47), weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
             }
-            Text("Источник: " + lyrics.sourceName)
+            if let provider = credits.providedBy {
+                Text("Provided by: " + provider)
+                    .font(.system(size: small, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            if credits.isCommunity == true, credits.maker != nil || credits.uploader != nil {
+                Text("These lyrics have been provided by our community")
+                    .font(.system(size: small, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.65))
+            }
+            if let maker = credits.maker {
+                ContributorRow(role: "Made by", contributor: maker, size: small)
+            }
+            if let uploader = credits.uploader {
+                ContributorRow(
+                    role: credits.maker != nil ? "Uploaded by" : (credits.isCommunity == true ? "Made by" : "Submitted by"),
+                    contributor: uploader,
+                    size: small
+                )
+            }
         }
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.white.opacity(0.55))
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// "Made by @name" with the avatar after it; tapping opens the Spicy Lyrics profile.
+private struct ContributorRow: View {
+    let role: String
+    let contributor: LyricsContributor
+    let size: CGFloat
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        HStack(spacing: 4) {
+            (Text(role + " ").foregroundStyle(.white.opacity(0.6))
+                + Text("@" + contributor.name).bold().underline().foregroundStyle(.white.opacity(0.75)))
+                .font(.system(size: size, weight: .semibold))
+            if let avatar = contributor.avatarURL {
+                AsyncImage(url: avatar) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Color.white.opacity(0.1)
+                }
+                .frame(width: size * 1.4, height: size * 1.4)
+                .clipShape(Circle())
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let url = contributor.profileURL { openURL(url) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(contributor.profileURL != nil ? .isLink : [])
     }
 }

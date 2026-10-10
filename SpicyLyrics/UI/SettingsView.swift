@@ -26,6 +26,15 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Обложка", isOn: $settings.landscapeArtwork)
+                    Toggle("Название и исполнитель", isOn: $settings.landscapeTitle)
+                } header: {
+                    Text("Горизонтальный режим")
+                } footer: {
+                    Text("Если выключить и то и другое, текст займёт весь экран, а кнопки будут появляться слева по касанию.")
+                }
+
+                Section {
                     VStack(alignment: .leading) {
                         Text("Сдвиг текста: \(Int(settings.timingOffsetMs)) мс")
                         Slider(value: $settings.timingOffsetMs, in: -1500...1500, step: 50)

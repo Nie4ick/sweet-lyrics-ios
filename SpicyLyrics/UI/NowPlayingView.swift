@@ -140,37 +140,56 @@ struct NowPlayingView: View {
     // MARK: Landscape
 
     private func landscapeLayout(_ size: CGSize) -> some View {
+        let showArtwork = settings.landscapeArtwork
+        let showTitle = settings.landscapeTitle
         let column = min(size.width * 0.4, 420)
-        let artworkSide = min(column - 40, size.height * (chromeVisible ? 0.42 : 0.62))
+        let blockWidth = column - 40
+        let artworkSide = min(blockWidth, size.height * (chromeVisible ? 0.42 : 0.62))
+        let infoWidth = showArtwork ? artworkSide : min(blockWidth, 320)
+        // With artwork and title switched off the column is empty once the controls hide:
+        // slide the lyrics to the middle instead of leaving a gap (no re-wrapping).
+        let columnEmpty = !showArtwork && !showTitle && !chromeVisible
+
         return HStack(spacing: 0) {
             VStack(spacing: 18) {
                 Spacer(minLength: 0)
-                artwork(side: artworkSide, cornerRadius: 12)
-                    .scaleEffect(player.isPlaying ? 1 : 0.86)
-                    .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
-                    .animation(.spring(response: 0.5, dampingFraction: 0.75), value: player.isPlaying)
-                    .onTapGesture { toggleChrome() }
-
-                HStack(alignment: .center, spacing: 10) {
-                    titleBlock
-                    Spacer(minLength: 0)
-                    moreMenu
-                        .opacity(chromeVisible ? 1 : 0)
+                if showArtwork {
+                    artwork(side: artworkSide, cornerRadius: 12)
+                        .scaleEffect(player.isPlaying ? 1 : 0.86)
+                        .shadow(color: .black.opacity(0.35), radius: 24, y: 12)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.75), value: player.isPlaying)
+                        .onTapGesture { toggleChrome() }
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
-                .frame(width: artworkSide)
+
+                if showTitle || chromeVisible {
+                    HStack(alignment: .center, spacing: 10) {
+                        if showTitle { titleBlock }
+                        Spacer(minLength: 0)
+                        moreMenu
+                            .opacity(chromeVisible ? 1 : 0)
+                    }
+                    .frame(width: infoWidth)
+                }
 
                 if chromeVisible {
                     controls
-                        .frame(width: max(artworkSide, 280))
+                        .frame(width: max(infoWidth, 280))
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
                 Spacer(minLength: 0)
             }
             .frame(width: column)
             .padding(.leading, 12)
+            .opacity(columnEmpty ? 0 : 1)
 
             lyricsArea(topInset: 0, bottomInset: 0, horizontalPadding: 24, focusAnchor: 0.38)
+                .frame(width: max(0, size.width - column - 12))
         }
+        .frame(width: size.width, alignment: .leading)
+        .offset(x: columnEmpty ? -(column + 12) / 2 : 0)
+        .animation(Self.chromeAnimation, value: showArtwork)
+        .animation(Self.chromeAnimation, value: showTitle)
     }
 
     // MARK: Header

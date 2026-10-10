@@ -19,6 +19,9 @@ final class AppSettings {
     var keepScreenOn: Bool { didSet { defaults.set(keepScreenOn, forKey: Keys.keepScreenOn) } }
     /// Fade the header and controls out while lyrics play, like Apple Music.
     var autoHideControls: Bool { didSet { defaults.set(autoHideControls, forKey: Keys.autoHide) } }
+    /// Landscape: show the big artwork / the title and artist next to the lyrics.
+    var landscapeArtwork: Bool { didSet { defaults.set(landscapeArtwork, forKey: Keys.landscapeArtwork) } }
+    var landscapeTitle: Bool { didSet { defaults.set(landscapeTitle, forKey: Keys.landscapeTitle) } }
 
     /// Keys baked in at build time from `Config/Secrets.xcconfig` or CI secrets (may be empty).
     let bundledSpotifyClientID = AppSettings.bundled("SpicyBundledSpotifyClientID")
@@ -35,6 +38,8 @@ final class AppSettings {
             Keys.lrclib: true,
             Keys.keepScreenOn: true,
             Keys.autoHide: true,
+            Keys.landscapeArtwork: true,
+            Keys.landscapeTitle: true,
         ])
         spotifyClientID = defaults.string(forKey: Keys.clientID) ?? ""
         spicyLyricsKey = defaults.string(forKey: Keys.spicyKey) ?? ""
@@ -46,6 +51,8 @@ final class AppSettings {
         useLRCLibFallback = defaults.bool(forKey: Keys.lrclib)
         keepScreenOn = defaults.bool(forKey: Keys.keepScreenOn)
         autoHideControls = defaults.bool(forKey: Keys.autoHide)
+        landscapeArtwork = defaults.bool(forKey: Keys.landscapeArtwork)
+        landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
 
     /// The Client ID typed in the app, else the one built into it.
@@ -87,5 +94,7 @@ final class AppSettings {
         static let lrclib = "useLRCLibFallback"
         static let keepScreenOn = "keepScreenOn"
         static let autoHide = "autoHideControls"
+        static let landscapeArtwork = "landscapeArtwork"
+        static let landscapeTitle = "landscapeTitle"
     }
 }

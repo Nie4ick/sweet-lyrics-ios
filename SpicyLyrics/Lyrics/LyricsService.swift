@@ -261,7 +261,7 @@ struct LyricsDiskCache {
 
     private let directory: URL = {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let url = base.appendingPathComponent("lyrics-v1", isDirectory: true)
+        let url = base.appendingPathComponent("lyrics-v2", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()
