@@ -96,10 +96,11 @@ final class LyricsPictureInPicture: NSObject {
 
     private func renderFrame() {
         guard let player else { return }
-        let snapshot = MainActor.assumeIsolated { PiPSnapshot(player: player, settings: settings) }
-        guard let sample = renderer.sampleBuffer(for: snapshot) else { return }
         let output = displayLayer.sampleBufferRenderer
         if output.status == .failed { output.flush() }
+        guard output.isReadyForMoreMediaData else { return }
+        let snapshot = MainActor.assumeIsolated { PiPSnapshot(player: player, settings: settings) }
+        guard let sample = renderer.sampleBuffer(for: snapshot) else { return }
         output.enqueue(sample)
 
         // Keep the PiP play/pause button in step with Spotify.
@@ -115,7 +116,7 @@ final class LyricsPictureInPicture: NSObject {
 extension LyricsPictureInPicture: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStartPictureInPicture(_ controller: AVPictureInPictureController) {
         isActive = true
-        scheduleFrames(fps: 15)
+        scheduleFrames(fps: 30)
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ controller: AVPictureInPictureController) {
@@ -179,9 +180,18 @@ struct PiPSnapshot: @unchecked Sendable {
     /// The current line as (text, brightness 0…1) runs, already timed.
     var current: [(text: String, lit: Double)] = []
     var next: String?
+    struct Neighbor {
+        var id: String
+        var text: String
+        var offset: Int
+    }
+    var neighbors: [Neighbor] = []
+    var simple = false
     var interlude = false
     var message: String?
     var fontDesign: UIFontDescriptor.SystemDesign = .default
+    /// Includes timing so consecutive identical lines still animate independently.
+    var lineID = ""
 
     @MainActor
     init(player: PlayerModel, settings: AppSettings?) {
@@ -190,6 +200,7 @@ struct PiPSnapshot: @unchecked Sendable {
         isPlaying = player.isPlaying
         artworkID = player.artworkID
         artwork = player.backgroundArtwork
+        simple = settings?.simpleLyricsMode ?? false
         switch LyricsFont(rawValue: settings?.lyricsFont ?? "") ?? .standard {
         case .standard: fontDesign = .default
         case .rounded: fontDesign = .rounded
@@ -201,6 +212,10 @@ struct PiPSnapshot: @unchecked Sendable {
             guard lyrics.kind != .static else {
                 current = [(lyrics.lines.first?.plainText ?? "", 1)]
                 next = lyrics.lines.dropFirst().first?.plainText
+                neighbors = lyrics.lines.dropFirst().prefix(2).enumerated().map {
+                    Neighbor(id: "static:\($0.offset + 1)", text: $0.element.plainText, offset: $0.offset + 1)
+                }
+                lineID = "static:0"
                 message = "Текст без синхронизации"
                 return
             }
@@ -209,9 +224,23 @@ struct PiPSnapshot: @unchecked Sendable {
             guard let index = rows.lastIndex(where: { $0.start <= time }) else {
                 interlude = true
                 next = rows.first(where: { !$0.isInterlude })?.plainText
+                neighbors = rows.enumerated().filter { !$0.element.isInterlude }.prefix(2).enumerated().map {
+                    Neighbor(id: "\($0.element.offset):\($0.element.element.start)",
+                             text: $0.element.element.plainText, offset: $0.offset + 1)
+                }
                 return
             }
             let row = rows[index]
+            lineID = "\(index):\(row.start)"
+            if let previous = rows[..<index].lastIndex(where: { !$0.isInterlude }) {
+                neighbors.append(Neighbor(id: "\(previous):\(rows[previous].start)",
+                                          text: rows[previous].plainText, offset: -1))
+            }
+            for (offset, entry) in rows.enumerated().dropFirst(index + 1)
+                .filter({ !$0.element.isInterlude }).prefix(2).enumerated() {
+                neighbors.append(Neighbor(id: "\(entry.offset):\(entry.element.start)",
+                                          text: entry.element.plainText, offset: offset + 1))
+            }
             next = rows[(index + 1)...].first(where: { !$0.isInterlude })?.plainText
             switch row.kind {
             case .interlude:
@@ -255,6 +284,9 @@ final class PiPFrameRenderer {
     private var pool: CVPixelBufferPool?
     private var format: CMVideoFormatDescription?
     private var blurredArtwork: (id: String, image: CGImage)?
+    private var currentSnapshot: PiPSnapshot?
+    private var outgoingSnapshot: PiPSnapshot?
+    private var transitionStart: CFTimeInterval = 0
 
     init(size: CGSize) {
         self.size = size
@@ -342,40 +374,144 @@ final class PiPFrameRenderer {
         footer.draw(with: CGRect(x: inset, y: rect.height - 46, width: textWidth, height: 28),
                     options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
 
-        if let message = snapshot.message, snapshot.current.isEmpty {
+        let now = CACurrentMediaTime()
+        if let previous = currentSnapshot,
+           previous.artworkID == snapshot.artworkID,
+           (previous.lineID != snapshot.lineID || previous.message != snapshot.message ||
+            previous.interlude != snapshot.interlude ||
+            previous.current.map(\.text) != snapshot.current.map(\.text)) {
+            outgoingSnapshot = previous
+            transitionStart = now
+        } else if currentSnapshot?.artworkID != snapshot.artworkID {
+            outgoingSnapshot = nil
+        }
+        currentSnapshot = snapshot
+        let progress = UIAccessibility.isReduceMotionEnabled ? 1 : min(1, max(0, (now - transitionStart) / 0.42))
+        let eased = CGFloat(1 - pow(1 - progress, 3))
+        context.saveGState()
+        context.clip(to: CGRect(x: inset - 8, y: 24, width: textWidth + 16, height: rect.height - 88))
+        drawLyrics(snapshot, from: outgoingSnapshot, progress: eased, in: rect, context: context)
+        context.restoreGState()
+        if progress >= 1 { outgoingSnapshot = nil }
+    }
+
+    private func drawLyrics(_ snapshot: PiPSnapshot, from previous: PiPSnapshot?, progress: CGFloat,
+                            in rect: CGRect, context: CGContext) {
+        let inset: CGFloat = 40
+        let width = rect.width - inset * 2
+        if let message = snapshot.message, snapshot.current.isEmpty, !snapshot.interlude {
             NSAttributedString(string: message, attributes: [
-                .font: font(36, .bold, snapshot.fontDesign), .foregroundColor: UIColor.white.withAlphaComponent(0.85),
-            ]).draw(with: CGRect(x: inset, y: 150, width: textWidth, height: 100), options: [.usesLineFragmentOrigin], context: nil)
+                .font: font(36, .bold, snapshot.fontDesign),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.85),
+            ]).draw(with: CGRect(x: inset, y: 116, width: width, height: 110),
+                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
             return
         }
 
-        // Current line, each syllable as bright as it is sung.
-        var y: CGFloat = 52
-        if snapshot.interlude {
-            let pulse = 0.45 + 0.4 * (0.5 + 0.5 * sin(CACurrentMediaTime() * 3))
-            NSAttributedString(string: "•  •  •", attributes: [
-                .font: font(54, .heavy, snapshot.fontDesign), .foregroundColor: UIColor.white.withAlphaComponent(pulse),
-            ]).draw(with: CGRect(x: inset, y: y, width: textWidth, height: 80), options: [.usesLineFragmentOrigin], context: nil)
-            y += 96
-        } else if !snapshot.current.isEmpty {
-            let line = NSMutableAttributedString()
-            for run in snapshot.current {
-                line.append(NSAttributedString(string: run.text, attributes: [
-                    .font: font(46, .bold, snapshot.fontDesign),
-                    .foregroundColor: UIColor.white.withAlphaComponent(0.42 + 0.58 * run.lit),
-                ]))
-            }
-            let box = CGRect(x: inset, y: y, width: textWidth, height: 180)
-            let bounds = line.boundingRect(with: box.size, options: [.usesLineFragmentOrigin], context: nil)
-            line.draw(with: box, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
-            y += min(bounds.height, box.height) + 18
+        // Match rows by lyric identity: the upcoming row moves into the active slot,
+        // and the active row moves above it instead of replacing the entire frame.
+        struct Row {
+            var id: String
+            var text: String
+            var offset: Int
         }
+        func rows(_ value: PiPSnapshot) -> [Row] {
+            [Row(id: value.lineID, text: value.interlude ? "•  •  •" : value.current.map(\.text).joined(), offset: 0)] +
+                value.neighbors.map { Row(id: $0.id, text: $0.text, offset: $0.offset) }
+        }
+        func y(_ offset: Int) -> CGFloat {
+            switch offset {
+            case ..<0: return 34
+            case 0: return 104
+            case 1: return 232
+            default: return 286
+            }
+        }
+        func emphasis(_ offset: Int) -> CGFloat { offset == 0 ? 1 : 0 }
+        let targetRows = rows(snapshot)
+        let oldRows = previous.map(rows) ?? targetRows
+        let oldByID = Dictionary(oldRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let targetIDs = Set(targetRows.map(\.id))
+        let allRows = targetRows + oldRows.filter { !targetIDs.contains($0.id) }
+        for row in allRows where !row.text.isEmpty {
+            let old = oldByID[row.id]
+            let exists = targetIDs.contains(row.id)
+            let startY = old.map { y($0.offset) } ?? (y(row.offset) + 44)
+            let endY = exists ? y(row.offset) : -50
+            let rowY = startY + (endY - startY) * progress
+            let startEmphasis = old.map { emphasis($0.offset) } ?? 0
+            let endEmphasis = exists ? emphasis(row.offset) : 0
+            let active = startEmphasis + (endEmphasis - startEmphasis) * progress
+            let alpha: CGFloat = exists ? (old == nil ? progress : 1) : 1 - progress
+            context.saveGState()
+            context.setAlpha(alpha)
+            let textFont = font(32 + 12 * active, active > 0.5 ? .bold : .semibold, snapshot.fontDesign)
+            let box = CGRect(x: inset, y: rowY, width: width, height: 48 + 68 * active)
+            if row.offset == 0, exists, !snapshot.interlude {
+                drawSyllables(snapshot, font: textFont, in: box, context: context)
+            } else {
+                let opacity: CGFloat = 0.28 + 0.65 * active
+                NSAttributedString(string: row.text, attributes: [
+                    .font: textFont, .foregroundColor: UIColor.white.withAlphaComponent(opacity),
+                ]).draw(with: box, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
+            }
+            context.restoreGState()
+        }
+    }
 
-        if let next = snapshot.next, y < rect.height - 110 {
-            NSAttributedString(string: next, attributes: [
-                .font: font(30, .semibold, snapshot.fontDesign), .foregroundColor: UIColor.white.withAlphaComponent(0.4),
-            ]).draw(with: CGRect(x: inset, y: y, width: textWidth, height: rect.height - 70 - y),
-                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
+    private func drawSyllables(_ snapshot: PiPSnapshot, font textFont: UIFont,
+                               in box: CGRect, context: CGContext) {
+        // TextKit keeps wrapping and glyph positions stable while each timed run lifts,
+        // glows, and fills from left to right (rather than changing the whole word's alpha).
+        let text = NSMutableAttributedString()
+        var runs: [(range: NSRange, progress: Double)] = []
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+        for run in snapshot.current {
+            let pulse = reduceMotion ? 0 : sin(.pi * min(1, max(0, run.lit)))
+            let range = NSRange(location: text.length, length: (run.text as NSString).length)
+            text.append(NSAttributedString(string: run.text, attributes: [
+                .font: textFont,
+                .foregroundColor: UIColor.white.withAlphaComponent(0.32),
+                .baselineOffset: pulse * (snapshot.simple ? 2 : 4),
+            ]))
+            runs.append((range, run.lit))
+        }
+        let storage = NSTextStorage(attributedString: text)
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: box.size)
+        container.lineFragmentPadding = 0
+        container.maximumNumberOfLines = 2
+        container.lineBreakMode = .byTruncatingTail
+        storage.addLayoutManager(layout)
+        layout.addTextContainer(container)
+        let glyphs = layout.glyphRange(for: container)
+        layout.drawGlyphs(forGlyphRange: glyphs, at: box.origin)
+        for run in runs where run.progress > 0 && run.range.length > 0 {
+            let range = layout.glyphRange(forCharacterRange: run.range, actualCharacterRange: nil)
+            storage.addAttribute(.foregroundColor, value: UIColor.white, range: run.range)
+            // A run may span a wrap: reveal its visible fragments in reading order.
+            var fragments: [CGRect] = []
+            layout.enumerateEnclosingRects(forGlyphRange: range, withinSelectedGlyphRange: range,
+                                            in: container) { fragment, _ in fragments.append(fragment) }
+            let totalWidth = fragments.reduce(CGFloat.zero) { $0 + $1.width }
+            var remaining = totalWidth * CGFloat(min(1, run.progress))
+            context.saveGState()
+            context.beginPath()
+            for fragment in fragments {
+                let revealed = min(fragment.width, max(0, remaining))
+                context.addRect(CGRect(x: box.minX + fragment.minX, y: box.minY + fragment.minY - 6,
+                                       width: revealed, height: fragment.height + 12))
+                remaining -= fragment.width
+            }
+            context.clip()
+            if !reduceMotion && !snapshot.simple {
+                let glow = sin(.pi * min(1, run.progress))
+                context.setShadow(offset: .zero, blur: 7 * glow,
+                                  color: UIColor.white.withAlphaComponent(0.45 * glow).cgColor)
+            }
+            layout.drawGlyphs(forGlyphRange: range, at: box.origin)
+            context.restoreGState()
+            storage.addAttribute(.foregroundColor, value: UIColor.white.withAlphaComponent(0.32), range: run.range)
         }
     }
 

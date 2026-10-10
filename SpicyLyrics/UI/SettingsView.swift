@@ -27,7 +27,6 @@ struct SettingsView: View {
                     Toggle("Не гасить экран", isOn: $settings.keepScreenOn)
                     Toggle("Прятать интерфейс во время песни", isOn: $settings.autoHideControls)
                     Toggle("Полоска громкости", isOn: $settings.showVolumeSlider)
-                    Toggle("Текст поверх приложений при сворачивании", isOn: $settings.autoPictureInPicture)
                     Toggle("Simple Lyrics Mode", isOn: $settings.simpleLyricsMode)
                     Toggle("Текст по центру", isOn: $settings.centerLyrics)
                     Picker("Шрифт", selection: $settings.lyricsFont) {
@@ -42,6 +41,14 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("Внешний вид")
+                }
+
+                Section {
+                    Toggle("Автоматически при сворачивании", isOn: $settings.autoPictureInPicture)
+                } header: {
+                    Text("Картинка в картинке")
+                } footer: {
+                    Text("Показывать текст поверх других приложений при сворачивании. По умолчанию выключено. Открыть PiP вручную можно кнопкой в плеере.")
                 }
 
                 Section {
