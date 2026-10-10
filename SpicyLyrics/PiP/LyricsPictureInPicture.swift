@@ -29,6 +29,7 @@ final class LyricsPictureInPicture: NSObject {
     @ObservationIgnored private var settings: AppSettings?
     @ObservationIgnored private let renderer = PiPFrameRenderer(size: LyricsPictureInPicture.frameSize)
     @ObservationIgnored private var lastPlaying: Bool?
+    @ObservationIgnored private var lyricsAnimator: LyricsAnimator?
 
     static var isSupported: Bool { AVPictureInPictureController.isPictureInPictureSupported() }
 
@@ -99,7 +100,18 @@ final class LyricsPictureInPicture: NSObject {
         let output = displayLayer.sampleBufferRenderer
         if output.status == .failed { output.flush() }
         guard output.isReadyForMoreMediaData else { return }
-        let snapshot = MainActor.assumeIsolated { PiPSnapshot(player: player, settings: settings) }
+        let snapshot = MainActor.assumeIsolated {
+            if case .loaded(let lyrics) = player.lyricsState {
+                let simple = settings?.simpleLyricsMode ?? false
+                if lyricsAnimator?.lyrics != lyrics || lyricsAnimator?.simple != simple {
+                    lyricsAnimator = LyricsAnimator(lyrics: lyrics, simple: simple)
+                }
+                lyricsAnimator?.step(position: player.position(), now: CACurrentMediaTime(), blurEnabled: false)
+            } else {
+                lyricsAnimator = nil
+            }
+            return PiPSnapshot(player: player, settings: settings, animator: lyricsAnimator)
+        }
         guard let sample = renderer.sampleBuffer(for: snapshot) else { return }
         output.enqueue(sample)
 
@@ -179,6 +191,13 @@ struct PiPSnapshot: @unchecked Sendable {
     var artwork: UIImage?
     /// The current line as (text, brightness 0…1) runs, already timed.
     var current: [(text: String, lit: Double)] = []
+    struct AnimatedRun {
+        var text: String
+        var visual: GlyphVisual
+    }
+    var animatedRuns: [AnimatedRun] = []
+    var dots: [GlyphVisual] = []
+    var dotGroupScale: Double = 0
     var next: String?
     struct Neighbor {
         var id: String
@@ -194,7 +213,7 @@ struct PiPSnapshot: @unchecked Sendable {
     var lineID = ""
 
     @MainActor
-    init(player: PlayerModel, settings: AppSettings?) {
+    init(player: PlayerModel, settings: AppSettings?, animator: LyricsAnimator?) {
         title = player.track?.title ?? "Spicy Lyrics"
         artist = player.track?.artistLine ?? ""
         isPlaying = player.isPlaying
@@ -231,6 +250,7 @@ struct PiPSnapshot: @unchecked Sendable {
                 return
             }
             let row = rows[index]
+            let visual = lyrics.lines.firstIndex(where: { $0.id == row.id }).flatMap { animator?.visuals[$0] }
             lineID = "\(index):\(row.start)"
             if let previous = rows[..<index].lastIndex(where: { !$0.isInterlude }) {
                 neighbors.append(Neighbor(id: "\(previous):\(rows[previous].start)",
@@ -245,6 +265,8 @@ struct PiPSnapshot: @unchecked Sendable {
             switch row.kind {
             case .interlude:
                 interlude = time < row.end
+                dots = visual?.dots ?? []
+                dotGroupScale = visual?.dotGroupScale ?? 0
                 if !interlude { current = [(row.plainText, 1)] }
             case .syllable(let lead, _):
                 current = lead.enumerated().flatMap { w, word -> [(text: String, lit: Double)] in
@@ -258,9 +280,25 @@ struct PiPSnapshot: @unchecked Sendable {
                     let gap: [(text: String, lit: Double)] = w == 0 ? [] : [(text: " ", lit: 1)]
                     return gap + syllables
                 }
+                for (w, word) in lead.enumerated() {
+                    if w > 0 { animatedRuns.append(AnimatedRun(text: " ", visual: GlyphVisual(gradient: 1))) }
+                    for (s, syllable) in word.syllables.enumerated() {
+                        let value = visual?.lead[w][s] ?? SyllableVisual()
+                        if let letters = syllable.letters, letters.count == value.letters.count {
+                            animatedRuns += zip(letters, value.letters).map {
+                                AnimatedRun(text: $0.0.text, visual: $0.1)
+                            }
+                        } else {
+                            animatedRuns.append(AnimatedRun(text: syllable.text, visual: value.glyph))
+                        }
+                    }
+                }
             case .line(let text):
                 let lit = time >= row.end ? 1 : min(1, max(0, (time - row.start) / max(row.end - row.start, 0.01)))
                 current = [(text, 0.3 + 0.7 * lit)]
+                var glyph = visual?.line ?? GlyphVisual(gradient: lit)
+                glyph.scale = visual?.scale ?? 1
+                animatedRuns = [AnimatedRun(text: text, visual: glyph)]
             case .static(let text):
                 current = [(text, 1)]
             }
@@ -447,7 +485,9 @@ final class PiPFrameRenderer {
             context.setAlpha(alpha)
             let textFont = font(32 + 12 * active, active > 0.5 ? .bold : .semibold, snapshot.fontDesign)
             let box = CGRect(x: inset, y: rowY, width: width, height: 48 + 68 * active)
-            if row.offset == 0, exists, !snapshot.interlude {
+            if row.offset == 0, exists, snapshot.interlude, !snapshot.dots.isEmpty {
+                drawDots(snapshot, in: box, context: context)
+            } else if row.offset == 0, exists, !snapshot.interlude {
                 drawSyllables(snapshot, font: textFont, in: box, context: context)
             } else {
                 let opacity: CGFloat = 0.28 + 0.65 * active
@@ -461,20 +501,18 @@ final class PiPFrameRenderer {
 
     private func drawSyllables(_ snapshot: PiPSnapshot, font textFont: UIFont,
                                in box: CGRect, context: CGContext) {
-        // TextKit keeps wrapping and glyph positions stable while each timed run lifts,
-        // glows, and fills from left to right (rather than changing the whole word's alpha).
+        // Lay out once, then apply the main player's spring-driven transforms to each
+        // syllable or emphasized letter without letting animation change wrapping.
+        let runs = snapshot.animatedRuns.isEmpty
+            ? snapshot.current.map { PiPSnapshot.AnimatedRun(text: $0.text, visual: GlyphVisual(gradient: $0.lit)) }
+            : snapshot.animatedRuns
         let text = NSMutableAttributedString()
-        var runs: [(range: NSRange, progress: Double)] = []
-        let reduceMotion = UIAccessibility.isReduceMotionEnabled
-        for run in snapshot.current {
-            let pulse = reduceMotion ? 0 : sin(.pi * min(1, max(0, run.lit)))
-            let range = NSRange(location: text.length, length: (run.text as NSString).length)
+        var ranges: [NSRange] = []
+        for run in runs {
+            ranges.append(NSRange(location: text.length, length: (run.text as NSString).length))
             text.append(NSAttributedString(string: run.text, attributes: [
-                .font: textFont,
-                .foregroundColor: UIColor.white.withAlphaComponent(0.32),
-                .baselineOffset: pulse * (snapshot.simple ? 2 : 4),
+                .font: textFont, .ligature: 0, .foregroundColor: UIColor.white.withAlphaComponent(0.32),
             ]))
-            runs.append((range, run.lit))
         }
         let storage = NSTextStorage(attributedString: text)
         let layout = NSLayoutManager()
@@ -484,35 +522,81 @@ final class PiPFrameRenderer {
         container.lineBreakMode = .byTruncatingTail
         storage.addLayoutManager(layout)
         layout.addTextContainer(container)
-        let glyphs = layout.glyphRange(for: container)
-        layout.drawGlyphs(forGlyphRange: glyphs, at: box.origin)
-        for run in runs where run.progress > 0 && run.range.length > 0 {
-            let range = layout.glyphRange(forCharacterRange: run.range, actualCharacterRange: nil)
-            storage.addAttribute(.foregroundColor, value: UIColor.white, range: run.range)
-            // A run may span a wrap: reveal its visible fragments in reading order.
+        layout.ensureLayout(for: container)
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+        for (run, characters) in zip(runs, ranges) where characters.length > 0 {
+            let glyphs = layout.glyphRange(forCharacterRange: characters, actualCharacterRange: nil)
             var fragments: [CGRect] = []
-            layout.enumerateEnclosingRects(forGlyphRange: range, withinSelectedGlyphRange: range,
+            layout.enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: glyphs,
                                             in: container) { fragment, _ in fragments.append(fragment) }
             let totalWidth = fragments.reduce(CGFloat.zero) { $0 + $1.width }
-            var remaining = totalWidth * CGFloat(min(1, run.progress))
-            context.saveGState()
-            context.beginPath()
+            guard totalWidth > 0 else { continue }
+            let value = run.visual
+            let scale = reduceMotion ? CGFloat(1) : CGFloat(value.scale)
+            let lift = reduceMotion ? CGFloat.zero : CGFloat(value.yOffset) * textFont.pointSize
+            let glow = reduceMotion ? CGFloat.zero : CGFloat(max(0, value.glow))
+            let edge = CGFloat(value.gradient) * totalWidth
+            let feather = totalWidth * (snapshot.simple ? 0.5 : 0.2)
+            var advance: CGFloat = 0
             for fragment in fragments {
-                let revealed = min(fragment.width, max(0, remaining))
-                context.addRect(CGRect(x: box.minX + fragment.minX, y: box.minY + fragment.minY - 6,
-                                       width: revealed, height: fragment.height + 12))
-                remaining -= fragment.width
+                let frame = fragment.offsetBy(dx: box.minX, dy: box.minY)
+                context.saveGState()
+                context.setAlpha(CGFloat(value.opacity))
+                context.translateBy(x: frame.midX, y: frame.midY + lift)
+                context.scaleBy(x: scale, y: scale)
+                context.translateBy(x: -frame.midX, y: -frame.midY)
+                context.clip(to: frame.insetBy(dx: -2, dy: -6))
+                layout.drawGlyphs(forGlyphRange: glyphs, at: box.origin)
+                if edge + feather > advance {
+                    storage.addAttribute(.foregroundColor, value: UIColor.white, range: characters)
+                    context.saveGState()
+                    // Composite the fill mask inside a layer, so the gradient cannot
+                    // erase the dim glyph underneath or the lyrics background.
+                    context.setShadow(offset: .zero, blur: 8 * glow,
+                                      color: UIColor.white.withAlphaComponent(min(1, 0.55 * glow)).cgColor)
+                    context.beginTransparencyLayer(auxiliaryInfo: nil)
+                    layout.drawGlyphs(forGlyphRange: glyphs, at: box.origin)
+                    context.setBlendMode(.destinationIn)
+                    let start = frame.minX + edge - advance
+                    let end = start + max(1, feather)
+                    let mask = CGGradient(colorsSpace: CGColorSpaceCreateDeviceGray(),
+                                          colorComponents: [1, 1, 1, 0], locations: [0, 1], count: 2)!
+                    context.drawLinearGradient(mask, start: CGPoint(x: start, y: frame.minY),
+                                               end: CGPoint(x: end, y: frame.minY),
+                                               options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+                    context.endTransparencyLayer()
+                    context.restoreGState()
+                    storage.addAttribute(.foregroundColor, value: UIColor.white.withAlphaComponent(0.32), range: characters)
+                }
+                context.restoreGState()
+                advance += fragment.width
             }
-            context.clip()
-            if !reduceMotion && !snapshot.simple {
-                let glow = sin(.pi * min(1, run.progress))
-                context.setShadow(offset: .zero, blur: 7 * glow,
-                                  color: UIColor.white.withAlphaComponent(0.45 * glow).cgColor)
-            }
-            layout.drawGlyphs(forGlyphRange: range, at: box.origin)
-            context.restoreGState()
-            storage.addAttribute(.foregroundColor, value: UIColor.white.withAlphaComponent(0.32), range: run.range)
         }
+    }
+
+    private func drawDots(_ snapshot: PiPSnapshot, in box: CGRect, context: CGContext) {
+        let reduceMotion = UIAccessibility.isReduceMotionEnabled
+        let groupScale = reduceMotion ? 1 : snapshot.dotGroupScale
+        guard groupScale > 0 else { return }
+        context.saveGState()
+        context.translateBy(x: box.minX + 42, y: box.minY + 30)
+        context.scaleBy(x: groupScale, y: groupScale)
+        for (index, dot) in snapshot.dots.enumerated() {
+            let scale = reduceMotion ? 1 : dot.scale
+            let lift = reduceMotion ? 0 : dot.yOffset * 50
+            let diameter = 17 * scale
+            context.saveGState()
+            context.setAlpha(CGFloat(dot.opacity))
+            if !reduceMotion {
+                context.setShadow(offset: .zero, blur: 8 * dot.glow,
+                                  color: UIColor.white.withAlphaComponent(min(1, dot.glow * 0.55)).cgColor)
+            }
+            context.setFillColor(UIColor.white.cgColor)
+            context.fillEllipse(in: CGRect(x: Double(index) * 27 - 27 - diameter / 2,
+                                            y: lift - diameter / 2, width: diameter, height: diameter))
+            context.restoreGState()
+        }
+        context.restoreGState()
     }
 
     private func font(_ size: CGFloat, _ weight: UIFont.Weight, _ design: UIFontDescriptor.SystemDesign) -> UIFont {
