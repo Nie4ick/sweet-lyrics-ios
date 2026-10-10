@@ -27,6 +27,8 @@ final class AppSettings {
     /// Translate the lyrics on the device and show the translation under each line.
     var translateLyrics: Bool { didSet { defaults.set(translateLyrics, forKey: Keys.translate) } }
     var translationLanguage: String { didSet { defaults.set(translationLanguage, forKey: Keys.translationLanguage) } }
+    /// Open the floating lyrics window when leaving the app.
+    var autoPictureInPicture: Bool { didSet { defaults.set(autoPictureInPicture, forKey: Keys.autoPiP) } }
     /// Spicy Lyrics' Simple Lyrics Mode: calmer word animation, softer fill.
     var simpleLyricsMode: Bool { didSet { defaults.set(simpleLyricsMode, forKey: Keys.simpleMode) } }
     /// Centre the lyrics instead of aligning them left (duets then stay centred too).
@@ -66,6 +68,7 @@ final class AppSettings {
             Keys.gestures: true,
             Keys.outputLatency: true,
             Keys.simpleMode: false,
+            Keys.autoPiP: true,
             Keys.translate: false,
             Keys.translationLanguage: Locale.current.language.languageCode?.identifier ?? "en",
             Keys.centerLyrics: false,
@@ -88,6 +91,7 @@ final class AppSettings {
         gesturesEnabled = defaults.bool(forKey: Keys.gestures)
         compensateOutputLatency = defaults.bool(forKey: Keys.outputLatency)
         simpleLyricsMode = defaults.bool(forKey: Keys.simpleMode)
+        autoPictureInPicture = defaults.bool(forKey: Keys.autoPiP)
         translateLyrics = defaults.bool(forKey: Keys.translate)
         translationLanguage = defaults.string(forKey: Keys.translationLanguage) ?? "en"
         centerLyrics = defaults.bool(forKey: Keys.centerLyrics)
@@ -145,6 +149,7 @@ final class AppSettings {
         static let gestures = "gesturesEnabled"
         static let outputLatency = "compensateOutputLatency"
         static let simpleMode = "simpleLyricsMode"
+        static let autoPiP = "autoPictureInPicture"
         static let translate = "translateLyrics"
         static let translationLanguage = "translationLanguage"
         static let centerLyrics = "centerLyrics"

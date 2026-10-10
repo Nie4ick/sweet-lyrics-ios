@@ -69,3 +69,6 @@ targets:
         LSApplicationQueriesSchemes:
           - spotify
         ITSAppUsesNonExemptEncryption: false
+        # Picture in Picture lyrics keep running while the app is in the background.
+        UIBackgroundModes:
+          - audio
