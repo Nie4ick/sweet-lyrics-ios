@@ -100,6 +100,7 @@ struct NowPlayingView: View {
         }
         .onChange(of: settings.showRomanization) { _, _ in player.settingsChanged() }
         .onChange(of: settings.simpleLyricsMode) { _, _ in player.settingsChanged() }
+        .modifier(LyricsTranslation(player: player, settings: settings))
         .alert("Spotify", isPresented: Binding(
             get: { player.transientError != nil },
             set: { if !$0 { player.transientError = nil } }

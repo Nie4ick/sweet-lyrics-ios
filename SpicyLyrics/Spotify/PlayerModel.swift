@@ -103,6 +103,8 @@ final class PlayerModel {
     /// True from (re)starting the poll until Spotify has answered: what is on screen may be an
     /// old track (the app was in the background while the song changed).
     private(set) var isResyncing = false
+    /// On-device translations of the current lyrics, keyed by the original line text.
+    private(set) var translations: [String: String] = [:]
     @ObservationIgnored private var outputLatency: Double = 0
     @ObservationIgnored private var playingOnThisPhone = false
 
@@ -388,6 +390,7 @@ final class PlayerModel {
     // MARK: Lyrics & artwork
 
     private func onContentChanged() {
+        translations = [:]
         lyricsTask?.cancel()
         lyricsTask = nil
         rawLyrics = nil
@@ -432,6 +435,11 @@ final class PlayerModel {
                 if reason != "cancelled" { self.lyricsState = .failed(reason) }
             }
         }
+    }
+
+    func setTranslations(_ result: [String: String], revision: Int) {
+        guard revision == lyricsRevision else { return }
+        translations = result
     }
 
     func clearLyricsCache() {

@@ -89,7 +89,9 @@ struct LyricsView: View {
 
                         LazyVStack(alignment: .leading, spacing: typography.lineSpacing) {
                             ForEach(shown.lines) { line in
-                                LyricLineView(line: line, visual: visuals[line.id], typography: typography)
+                                LyricLineView(line: line, visual: visuals[line.id], typography: typography,
+                                              translation: settings.translateLyrics && !line.isBackground
+                                                  ? player.translations[line.sourceText] : nil)
                                     .equatable()
                                     .contentShape(Rectangle())
                                     .onTapGesture {

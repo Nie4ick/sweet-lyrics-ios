@@ -24,6 +24,9 @@ final class AppSettings {
     var autoHideControls: Bool { didSet { defaults.set(autoHideControls, forKey: Keys.autoHide) } }
     /// Subtract the audio output delay (Bluetooth) when Spotify plays on this iPhone.
     var compensateOutputLatency: Bool { didSet { defaults.set(compensateOutputLatency, forKey: Keys.outputLatency) } }
+    /// Translate the lyrics on the device and show the translation under each line.
+    var translateLyrics: Bool { didSet { defaults.set(translateLyrics, forKey: Keys.translate) } }
+    var translationLanguage: String { didSet { defaults.set(translationLanguage, forKey: Keys.translationLanguage) } }
     /// Spicy Lyrics' Simple Lyrics Mode: calmer word animation, softer fill.
     var simpleLyricsMode: Bool { didSet { defaults.set(simpleLyricsMode, forKey: Keys.simpleMode) } }
     /// Centre the lyrics instead of aligning them left (duets then stay centred too).
@@ -63,6 +66,8 @@ final class AppSettings {
             Keys.gestures: true,
             Keys.outputLatency: true,
             Keys.simpleMode: false,
+            Keys.translate: false,
+            Keys.translationLanguage: Locale.current.language.languageCode?.identifier ?? "en",
             Keys.centerLyrics: false,
             Keys.lyricsFont: LyricsFont.standard.rawValue,
             Keys.landscapeTitle: true,
@@ -83,6 +88,8 @@ final class AppSettings {
         gesturesEnabled = defaults.bool(forKey: Keys.gestures)
         compensateOutputLatency = defaults.bool(forKey: Keys.outputLatency)
         simpleLyricsMode = defaults.bool(forKey: Keys.simpleMode)
+        translateLyrics = defaults.bool(forKey: Keys.translate)
+        translationLanguage = defaults.string(forKey: Keys.translationLanguage) ?? "en"
         centerLyrics = defaults.bool(forKey: Keys.centerLyrics)
         lyricsFont = defaults.string(forKey: Keys.lyricsFont) ?? LyricsFont.standard.rawValue
         landscapeArtwork = defaults.bool(forKey: Keys.landscapeArtwork)
@@ -138,6 +145,8 @@ final class AppSettings {
         static let gestures = "gesturesEnabled"
         static let outputLatency = "compensateOutputLatency"
         static let simpleMode = "simpleLyricsMode"
+        static let translate = "translateLyrics"
+        static let translationLanguage = "translationLanguage"
         static let centerLyrics = "centerLyrics"
         static let lyricsFont = "lyricsFont"
         static let landscapeArtwork = "landscapeArtwork"

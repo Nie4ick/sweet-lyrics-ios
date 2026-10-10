@@ -113,9 +113,12 @@ struct LyricLineView: View, Equatable {
     let line: PreparedLine
     let visual: LineVisual
     let typography: LyricsTypography
+    /// On-device translation shown under the line.
+    var translation: String? = nil
 
     static func == (lhs: LyricLineView, rhs: LyricLineView) -> Bool {
         lhs.line.id == rhs.line.id && lhs.visual == rhs.visual && lhs.typography == rhs.typography
+            && lhs.translation == rhs.translation
     }
 
     private var horizontalAlignment: HorizontalAlignment {
@@ -125,7 +128,16 @@ struct LyricLineView: View, Equatable {
     private var textAlignment: TextAlignment { typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading) }
 
     var body: some View {
-        content
+        VStack(alignment: horizontalAlignment, spacing: typography.fontSize * 0.1) {
+            content
+            if let translation, !translation.isEmpty {
+                Text(translation)
+                    .font(.system(size: typography.fontSize * 0.55, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(textAlignment)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
             .padding(typography.insets(opposite: line.oppositeAligned))
             // `.bg-line { margin: -1cqw 0 1cqw }`: tucked right under the line above.
             .padding(.top, line.isBackground ? -typography.lineSpacing : 0)

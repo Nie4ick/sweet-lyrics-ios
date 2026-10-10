@@ -114,6 +114,8 @@ struct PreparedLine: Identifiable, Hashable {
     var isBackground = false
     /// For background rows: the lead line they belong to (focus never stops on a background row).
     var leadID: Int?
+    /// The line in its original language and script, what gets translated.
+    var sourceText = ""
 
     var isInterlude: Bool {
         if case .interlude = kind { return true }
@@ -155,17 +157,24 @@ struct PreparedLyrics: Hashable {
         sourceName = document.sourceName
         credits = document.credits ?? LyricsCredits(providedBy: document.sourceName)
 
+        // Romanization: the API's own where it has one, otherwise done on the device.
+        let script = romanized ? Romanizer.script(of: document) : nil
+        func roman(_ text: String, _ fromAPI: String?) -> String {
+            guard romanized else { return text }
+            return fromAPI ?? script.map { Romanizer.romanize(text, script: $0) } ?? text
+        }
+
         var result: [PreparedLine] = []
-        func append(_ start: Double, _ end: Double, _ opposite: Bool, _ kind: PreparedLineKind) {
-            result.append(PreparedLine(id: result.count, start: start, end: end, oppositeAligned: opposite, kind: kind))
+        func append(_ start: Double, _ end: Double, _ opposite: Bool, _ kind: PreparedLineKind, source: String = "") {
+            result.append(PreparedLine(id: result.count, start: start, end: end, oppositeAligned: opposite, kind: kind,
+                                       sourceText: source))
         }
 
         let source = document.lines
         switch document.kind {
         case .static:
             for line in source {
-                let text = romanized ? (line.romanizedText ?? line.text) : line.text
-                append(0, 0, line.oppositeAligned, .static(text: text))
+                append(0, 0, line.oppositeAligned, .static(text: roman(line.text, line.romanizedText)), source: line.text)
             }
         case .line, .syllable:
             if let first = source.first, first.start >= Self.interludeThreshold {
@@ -180,23 +189,23 @@ struct PreparedLyrics: Hashable {
                     // The lead and each background group become rows of their own, timed by their
                     // own syllables (`Applyer/Synced/Syllable.ts`).
                     var leadID: Int?
-                    let lead = Self.words(from: line.lead, romanized: romanized, simple: simple)
+                    let lead = Self.words(from: line.lead, simple: simple) { roman($0.text, $0.romanized) }
                     if !lead.isEmpty {
                         leadID = result.count
                         append(line.lead.map(\.start).min() ?? line.start, line.lead.map(\.end).max() ?? line.end,
-                               line.oppositeAligned, .syllable(lead: lead, background: []))
+                               line.oppositeAligned, .syllable(lead: lead, background: []), source: Self.plain(line.lead))
                     }
                     for group in line.backgroundVocals {
-                        let words = Self.words(from: group, romanized: romanized, simple: simple)
+                        let words = Self.words(from: group, simple: simple) { roman($0.text, $0.romanized) }
                         guard !words.isEmpty, let start = group.map(\.start).min(), let end = group.map(\.end).max() else { continue }
                         result.append(PreparedLine(id: result.count, start: start, end: end,
                                                    oppositeAligned: line.oppositeAligned,
                                                    kind: .syllable(lead: words, background: []),
-                                                   isBackground: true, leadID: leadID))
+                                                   isBackground: true, leadID: leadID, sourceText: Self.plain(group)))
                     }
                 } else {
-                    let text = romanized ? (line.romanizedText ?? line.text) : line.text
-                    append(line.start, line.end, line.oppositeAligned, .line(text: text))
+                    append(line.start, line.end, line.oppositeAligned, .line(text: roman(line.text, line.romanizedText)),
+                           source: line.text)
                 }
                 if index + 1 < source.count {
                     let next = source[index + 1]
@@ -226,7 +235,13 @@ struct PreparedLyrics: Hashable {
         ]
     }
 
-    private static func words(from syllables: [LyricSyllable], romanized: Bool, simple: Bool) -> [PreparedWord] {
+    /// Syllables as one string, spaced where words end.
+    private static func plain(_ syllables: [LyricSyllable]) -> String {
+        syllables.map { $0.text + ($0.joinsNext ? "" : " ") }.joined().trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func words(from syllables: [LyricSyllable], simple: Bool,
+                              display: (LyricSyllable) -> String) -> [PreparedWord] {
         var words: [PreparedWord] = []
         var current: [PreparedSyllable] = []
         // Syllables are drawn left to right, so they must also light up left to right. Some
@@ -234,7 +249,7 @@ struct PreparedLyrics: Hashable {
         // instead of lighting the line out of order.
         var earliestStart = -Double.infinity
         for syllable in syllables {
-            let raw = romanized ? (syllable.romanized ?? syllable.text) : syllable.text
+            let raw = display(syllable)
             let text = raw.replacingOccurrences(of: "\u{200B}", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {

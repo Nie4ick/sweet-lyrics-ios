@@ -15,7 +15,15 @@ struct SettingsView: View {
                 Section {
                     Toggle("Динамический фон", isOn: $settings.dynamicBackground)
                     Toggle("Размытие неактивных строк", isOn: $settings.blurInactiveLines)
-                    Toggle("Романизация (если есть)", isOn: $settings.showRomanization)
+                    Toggle("Романизация", isOn: $settings.showRomanization)
+                    Toggle("Перевод под строками", isOn: $settings.translateLyrics)
+                    if settings.translateLyrics {
+                        Picker("Язык перевода", selection: $settings.translationLanguage) {
+                            ForEach(LyricsTranslation.languages, id: \.id) { language in
+                                Text(language.name).tag(language.id)
+                            }
+                        }
+                    }
                     Toggle("Не гасить экран", isOn: $settings.keepScreenOn)
                     Toggle("Прятать интерфейс во время песни", isOn: $settings.autoHideControls)
                     Toggle("Полоска громкости", isOn: $settings.showVolumeSlider)
