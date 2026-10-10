@@ -22,6 +22,10 @@ final class AppSettings {
     var keepScreenOn: Bool { didSet { defaults.set(keepScreenOn, forKey: Keys.keepScreenOn) } }
     /// Fade the header and controls out while lyrics play, like Apple Music.
     var autoHideControls: Bool { didSet { defaults.set(autoHideControls, forKey: Keys.autoHide) } }
+    /// Subtract the audio output delay (Bluetooth) when Spotify plays on this iPhone.
+    var compensateOutputLatency: Bool { didSet { defaults.set(compensateOutputLatency, forKey: Keys.outputLatency) } }
+    /// Swipes to change tracks and pinch to resize the lyrics.
+    var gesturesEnabled: Bool { didSet { defaults.set(gesturesEnabled, forKey: Keys.gestures) } }
     /// The system volume slider under the playback buttons.
     var showVolumeSlider: Bool { didSet { defaults.set(showVolumeSlider, forKey: Keys.volumeSlider) } }
     /// Battery saver: 30 fps lyrics, no line blur, still background.
@@ -50,6 +54,8 @@ final class AppSettings {
             Keys.landscapeArtwork: true,
             Keys.powerSaving: false,
             Keys.volumeSlider: true,
+            Keys.gestures: true,
+            Keys.outputLatency: true,
             Keys.landscapeTitle: true,
         ])
         spotifyClientID = defaults.string(forKey: Keys.clientID) ?? ""
@@ -65,6 +71,8 @@ final class AppSettings {
         autoHideControls = defaults.bool(forKey: Keys.autoHide)
         powerSaving = defaults.bool(forKey: Keys.powerSaving)
         showVolumeSlider = defaults.bool(forKey: Keys.volumeSlider)
+        gesturesEnabled = defaults.bool(forKey: Keys.gestures)
+        compensateOutputLatency = defaults.bool(forKey: Keys.outputLatency)
         landscapeArtwork = defaults.bool(forKey: Keys.landscapeArtwork)
         landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
@@ -98,6 +106,9 @@ final class AppSettings {
         return key
     }
 
+    /// Lyric font size limits (settings slider and pinch).
+    static let fontRange: ClosedRange<CGFloat> = 22...56
+
     private enum Keys {
         static let clientID = "spotifyClientID"
         static let useOwnClientID = "useOwnClientID"
@@ -112,6 +123,8 @@ final class AppSettings {
         static let autoHide = "autoHideControls"
         static let powerSaving = "powerSaving"
         static let volumeSlider = "showVolumeSlider"
+        static let gestures = "gesturesEnabled"
+        static let outputLatency = "compensateOutputLatency"
         static let landscapeArtwork = "landscapeArtwork"
         static let landscapeTitle = "landscapeTitle"
     }

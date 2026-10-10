@@ -150,6 +150,7 @@ private struct TransportButton: View {
         }
         .buttonStyle(PressedCircleStyle())
         .foregroundStyle(.white)
+        .hoverEffect(.highlight)
     }
 }
 

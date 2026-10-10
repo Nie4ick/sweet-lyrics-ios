@@ -334,13 +334,15 @@ final class LyricsAnimator {
                 high = mid - 1
             }
         }
+        // Background rows never hold focus: they belong to their lead line (`ResolveToLeadIndex`).
+        if lines[found].isBackground, let lead = lines[found].leadID { found = lead }
         // Prefer the first of several lines that start together (duets). Only lines that start
         // together count: a long earlier line that merely overlaps (a trailing backing vocal, a
         // word timed a bit early) must not hold focus while the next line is being sung.
         var index = found
         while index > 0 {
             let previous = lines[index - 1]
-            guard !previous.isInterlude,
+            guard !previous.isInterlude, !previous.isBackground,
                   lines[index].start - previous.start <= duetWindow,
                   ElementState(time, previous.start, previous.end) == .active
             else { break }

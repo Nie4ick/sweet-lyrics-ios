@@ -9,13 +9,15 @@ struct SpicyLyricsApp: App {
     @State private var performance = PerformanceMonitor()
 
     init() {
+        AudioRoute.prepare()
         let settings = AppSettings()
         let auth = SpotifyAuth(settings: settings)
         let api = SpotifyAPI(auth: auth)
-        let lyrics = LyricsService(settings: settings, auth: auth)
+        let localLyrics = LocalLyricsStore()
+        let lyrics = LyricsService(settings: settings, auth: auth, local: localLyrics)
         _settings = State(initialValue: settings)
         _auth = StateObject(wrappedValue: auth)
-        _player = State(initialValue: PlayerModel(api: api, lyrics: lyrics, settings: settings))
+        _player = State(initialValue: PlayerModel(api: api, lyrics: lyrics, settings: settings, localLyrics: localLyrics))
     }
 
     var body: some Scene {

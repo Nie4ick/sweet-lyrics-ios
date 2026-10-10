@@ -108,6 +108,8 @@ struct LyricLineView: View, Equatable {
     var body: some View {
         content
             .padding(typography.insets(opposite: line.oppositeAligned))
+            // `.bg-line { margin: -1cqw 0 1cqw }`: tucked right under the line above.
+            .padding(.top, line.isBackground ? -typography.lineSpacing : 0)
             .frame(maxWidth: .infinity, alignment: frameAlignment)
             .opacity(visual.opacity)
             .blur(radius: visual.blur > 0.05 ? visual.blur / 2 : 0)
@@ -120,8 +122,10 @@ struct LyricLineView: View, Equatable {
             // `.bg-line { margin: -1cqw 0 1cqw }` cancels the gap under the lead line.
             VStack(alignment: horizontalAlignment, spacing: 0) {
                 if !lead.isEmpty {
-                    WordFlowView(words: lead, visuals: visual.lead, fontSize: typography.fontSize,
-                                 font: typography.leadFont, alpha: .lead, typography: typography,
+                    WordFlowView(words: lead, visuals: visual.lead,
+                                 fontSize: line.isBackground ? typography.backgroundFontSize : typography.fontSize,
+                                 font: line.isBackground ? typography.backgroundFont : typography.leadFont,
+                                 alpha: line.isBackground ? .background : .lead, typography: typography,
                                  alignment: horizontalAlignment)
                 }
                 if !background.isEmpty {

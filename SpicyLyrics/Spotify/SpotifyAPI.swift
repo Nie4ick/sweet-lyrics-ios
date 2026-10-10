@@ -46,6 +46,8 @@ struct PlaybackSnapshot {
     /// The album / playlist / artist being played, e.g. `spotify:playlist:…`.
     var contextURI: String?
     var deviceName: String?
+    /// Spotify Connect device type, e.g. "Smartphone", "Computer", "Speaker".
+    var deviceType: String?
 }
 
 enum SpotifyAPIError: LocalizedError {
@@ -153,7 +155,8 @@ final class SpotifyAPI {
             progress: Double(payload.progress_ms ?? 0) / 1000,
             measuredAt: measuredAt,
             contextURI: payload.context?.uri,
-            deviceName: payload.device?.name
+            deviceName: payload.device?.name,
+            deviceType: payload.device?.type
         )
     }
 
@@ -367,7 +370,7 @@ final class SpotifyAPI {
     }
 
     private struct PlaybackPayload: Decodable {
-        struct Device: Decodable { let name: String? }
+        struct Device: Decodable { let name: String?; let type: String? }
         let progress_ms: Int?
         let is_playing: Bool
         let currently_playing_type: String?

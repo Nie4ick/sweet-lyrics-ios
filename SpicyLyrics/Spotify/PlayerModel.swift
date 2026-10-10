@@ -76,18 +76,32 @@ final class PlayerModel {
     /// means it is paused.
     private static let stallTimeout: Double = 1.8
 
-    init(api: SpotifyAPI, lyrics: LyricsService, settings: AppSettings) {
+    /// The user's saved TTML files.
+    @ObservationIgnored let localLyrics: LocalLyricsStore
+    /// TTML applied "just once": kept for its track until the app quits.
+    @ObservationIgnored private var temporaryLyrics: [String: LyricsDocument] = [:]
+
+    init(api: SpotifyAPI, lyrics: LyricsService, settings: AppSettings, localLyrics: LocalLyricsStore) {
         self.api = api
         self.lyrics = lyrics
         self.settings = settings
+        self.localLyrics = localLyrics
     }
 
     // MARK: Clock
 
-    /// Lyrics clock in seconds at media time `now`: playback position plus the user's offset.
+    /// Lyrics clock in seconds at media time `now`: playback position plus the user's offset,
+    /// minus the audio output's delay when Spotify plays on this phone (Bluetooth headphones).
     func position(at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
-        playbackPosition(at: now) + settings.timingOffsetMs / 1000
+        let latency = settings.compensateOutputLatency && playingOnThisPhone ? outputLatency : 0
+        return playbackPosition(at: now) + settings.timingOffsetMs / 1000 - latency
     }
+
+    /// True from (re)starting the poll until Spotify has answered: what is on screen may be an
+    /// old track (the app was in the background while the song changed).
+    private(set) var isResyncing = false
+    @ObservationIgnored private var outputLatency: Double = 0
+    @ObservationIgnored private var playingOnThisPhone = false
 
     /// Spotify's playback position in seconds at media time `now`.
     func playbackPosition(at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
@@ -137,6 +151,9 @@ final class PlayerModel {
         statusMessage = nil
         contextURI = snapshot.contextURI
         deviceName = snapshot.deviceName
+        // A "Smartphone" device is (almost always) this iPhone: its audio route delay applies.
+        playingOnThisPhone = snapshot.deviceType?.lowercased() == "smartphone"
+        outputLatency = AudioRoute.outputLatency
 
         let now = CACurrentMediaTime()
         let trackChanged = content != snapshot.content
@@ -182,6 +199,8 @@ final class PlayerModel {
 
     func startPolling() {
         guard pollTask == nil else { return }
+        // Coming back from the background: the song may have changed meanwhile.
+        if content != nil { isResyncing = true }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -203,6 +222,7 @@ final class PlayerModel {
         do {
             apply(try await api.playbackState())
             accessProblem = nil
+            isResyncing = false
             return nextPollInterval()
         } catch SpotifyAPIError.rateLimited(let retryAfter) {
             backoffUntil = now + retryAfter
@@ -223,7 +243,9 @@ final class PlayerModel {
             return 1
         } catch {
             statusMessage = error.localizedDescription
-            return 4
+            // Right after returning to the app the first request often hits a stale connection:
+            // retry quickly instead of showing the old track for seconds.
+            return isResyncing ? 0.6 : 4
         }
     }
 
@@ -353,6 +375,10 @@ final class PlayerModel {
 
     func loadLyrics(force: Bool) {
         guard let track else { return }
+        if let temporary = temporaryLyrics[track.id] {
+            show(temporary)
+            return
+        }
         lyricsTask?.cancel()
         lyricsState = .loading
         lyricsTask = Task { [weak self] in
@@ -376,6 +402,53 @@ final class PlayerModel {
 
     func clearLyricsCache() {
         lyrics.clearCache()
+    }
+
+    // MARK: Own TTML
+
+    enum TTMLMode: String, CaseIterable {
+        /// Saved in the library: used for this track from now on.
+        case library
+        /// Only until the app quits (the extension's "Just once").
+        case temporary
+    }
+
+    enum TTMLError: LocalizedError {
+        case noTrack
+        var errorDescription: String? { "Сейчас не играет трек Spotify, к которому можно привязать текст." }
+    }
+
+    var hasTemporaryLyrics: Bool { track.map { temporaryLyrics[$0.id] != nil } ?? false }
+
+    /// Parses a TTML and shows it for the current track, saving it to the library if asked.
+    func applyTTML(_ text: String, mode: TTMLMode) throws {
+        guard let track else { throw TTMLError.noTrack }
+        let document: LyricsDocument
+        switch mode {
+        case .library:
+            document = try localLyrics.save(text, for: track)
+            temporaryLyrics[track.id] = nil
+        case .temporary:
+            document = try TTMLParser.parse(text, sourceName: "Local TTML (temporary)")
+            temporaryLyrics[track.id] = document
+        }
+        show(document)
+    }
+
+    /// Removes a track's own lyrics (saved and temporary) and reloads if it is playing.
+    func removeOwnLyrics(trackID: String) {
+        localLyrics.remove(trackID)
+        temporaryLyrics[trackID] = nil
+        if track?.id == trackID { loadLyrics(force: false) }
+    }
+
+    private func show(_ document: LyricsDocument) {
+        lyricsTask?.cancel()
+        lyricsTask = nil
+        rawLyrics = document
+        preparedRomanized = settings.showRomanization
+        lyricsRevision += 1
+        lyricsState = .loaded(PreparedLyrics(document: document, romanized: settings.showRomanization))
     }
 
     /// Re-prepares the current lyrics after a display setting changed.

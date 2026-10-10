@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(PlayerModel.self) private var player
     @Environment(\.dismiss) private var dismiss
     @State private var cacheCleared = false
+    @State private var showOwnLyrics = false
 
     var body: some View {
         @Bindable var settings = settings
@@ -21,10 +22,24 @@ struct SettingsView: View {
                     Toggle("Экономия батареи", isOn: $settings.powerSaving)
                     VStack(alignment: .leading) {
                         Text("Размер шрифта: \(Int(settings.fontSize))")
-                        Slider(value: $settings.fontSize, in: 22...48, step: 1)
+                        Slider(value: $settings.fontSize, in: 22...56, step: 1)
                     }
                 } header: {
                     Text("Внешний вид")
+                }
+
+                Section {
+                    Toggle("Жесты", isOn: $settings.gesturesEnabled)
+                    gestureRow("hand.draw", "Свайп влево / вправо по тексту", "следующий / предыдущий трек")
+                    gestureRow("arrow.up.left.and.arrow.down.right", "Щипок двумя пальцами", "размер текста")
+                    gestureRow("hand.tap", "Долгое нажатие на строку", "перемотать, скопировать, поделиться")
+                    gestureRow("chevron.up", "Свайп вверх внизу экрана", "показать кнопки")
+                    gestureRow("chevron.down", "Свайп вниз по заголовку", "спрятать кнопки")
+                    gestureRow("hand.point.up.left", "Касание строки", "перемотать к ней")
+                } header: {
+                    Text("Жесты")
+                } footer: {
+                    Text("Свайпы и щипок работают на iOS 18 и новее. На iPad с клавиатурой: пробел — пауза, ⌘← / ⌘→ — треки.")
                 }
 
                 Section {
@@ -42,10 +57,11 @@ struct SettingsView: View {
                         Slider(value: $settings.timingOffsetMs, in: -1500...1500, step: 50)
                     }
                     Button("Сбросить сдвиг") { settings.timingOffsetMs = 0 }
+                    Toggle("Учитывать задержку наушников", isOn: $settings.compensateOutputLatency)
                 } header: {
                     Text("Синхронизация")
                 } footer: {
-                    Text("Положительное значение показывает слова раньше. Помогает при задержке Bluetooth-наушников.")
+                    Text("Положительный сдвиг показывает слова раньше. Задержка Bluetooth-наушников учитывается сама, когда Spotify играет на этом iPhone.")
                 }
 
                 Section {
@@ -70,6 +86,7 @@ struct SettingsView: View {
                         player.loadLyrics(force: true)
                         dismiss()
                     }
+                    Button("Свои тексты (TTML)") { showOwnLyrics = true }
                     Button(cacheCleared ? "Кэш очищен" : "Очистить кэш текстов") {
                         player.clearLyricsCache()
                         cacheCleared = true
@@ -120,6 +137,10 @@ struct SettingsView: View {
                     Text("Неофициальный iOS-порт. Распространяется по лицензии AGPL-3.0, как и оригинал. Не связан со Spotify AB.")
                 }
             }
+            .sheet(isPresented: $showOwnLyrics) {
+                OwnLyricsView()
+                    .environment(player)
+            }
             .navigationTitle("Настройки")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -127,6 +148,17 @@ struct SettingsView: View {
                     Button("Готово") { dismiss() }
                 }
             }
+        }
+    }
+
+    private func gestureRow(_ icon: String, _ gesture: String, _ effect: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(gesture)
+                Text(effect).font(.caption).foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: icon)
         }
     }
 }
