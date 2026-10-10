@@ -52,6 +52,7 @@ final class PlayerModel {
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
     @ObservationIgnored private var rawLyrics: LyricsDocument?
     @ObservationIgnored private var preparedRomanized = false
+    @ObservationIgnored private var preparedSimple = false
     @ObservationIgnored private var lastArtworkURL: URL?
 
     // Clock anchor: position `anchorPosition` was correct at `anchorTime`. `slew` is a small
@@ -422,8 +423,9 @@ final class PlayerModel {
             case .found(let document):
                 self.rawLyrics = document
                 self.preparedRomanized = self.settings.showRomanization
+                self.preparedSimple = self.settings.simpleLyricsMode
                 self.lyricsRevision += 1
-                self.lyricsState = .loaded(PreparedLyrics(document: document, romanized: self.settings.showRomanization))
+                self.lyricsState = .loaded(PreparedLyrics(document: document, romanized: self.settings.showRomanization, simple: self.settings.simpleLyricsMode))
             case .notFound:
                 self.lyricsState = .notFound
             case .failed(let reason):
@@ -479,16 +481,20 @@ final class PlayerModel {
         lyricsTask = nil
         rawLyrics = document
         preparedRomanized = settings.showRomanization
+        preparedSimple = settings.simpleLyricsMode
         lyricsRevision += 1
-        lyricsState = .loaded(PreparedLyrics(document: document, romanized: settings.showRomanization))
+        lyricsState = .loaded(PreparedLyrics(document: document, romanized: settings.showRomanization, simple: settings.simpleLyricsMode))
     }
 
     /// Re-prepares the current lyrics after a display setting changed.
     func settingsChanged() {
-        guard let rawLyrics, preparedRomanized != settings.showRomanization else { return }
+        guard let rawLyrics,
+              preparedRomanized != settings.showRomanization || preparedSimple != settings.simpleLyricsMode
+        else { return }
         preparedRomanized = settings.showRomanization
+        preparedSimple = settings.simpleLyricsMode
         lyricsRevision += 1
-        lyricsState = .loaded(PreparedLyrics(document: rawLyrics, romanized: settings.showRomanization))
+        lyricsState = .loaded(PreparedLyrics(document: rawLyrics, romanized: settings.showRomanization, simple: settings.simpleLyricsMode))
     }
 
     private func loadArtwork() {

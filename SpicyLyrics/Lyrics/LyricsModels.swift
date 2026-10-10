@@ -149,7 +149,7 @@ struct PreparedLyrics: Hashable {
     /// Emphasized letters end early so the last one gets to breathe (Spicy's `Emphasize`).
     static let emphasisEndSubtraction: Double = 0.25
 
-    init(document: LyricsDocument, romanized: Bool) {
+    init(document: LyricsDocument, romanized: Bool, simple: Bool = false) {
         kind = document.kind
         songwriters = document.songwriters
         sourceName = document.sourceName
@@ -180,14 +180,14 @@ struct PreparedLyrics: Hashable {
                     // The lead and each background group become rows of their own, timed by their
                     // own syllables (`Applyer/Synced/Syllable.ts`).
                     var leadID: Int?
-                    let lead = Self.words(from: line.lead, romanized: romanized)
+                    let lead = Self.words(from: line.lead, romanized: romanized, simple: simple)
                     if !lead.isEmpty {
                         leadID = result.count
                         append(line.lead.map(\.start).min() ?? line.start, line.lead.map(\.end).max() ?? line.end,
                                line.oppositeAligned, .syllable(lead: lead, background: []))
                     }
                     for group in line.backgroundVocals {
-                        let words = Self.words(from: group, romanized: romanized)
+                        let words = Self.words(from: group, romanized: romanized, simple: simple)
                         guard !words.isEmpty, let start = group.map(\.start).min(), let end = group.map(\.end).max() else { continue }
                         result.append(PreparedLine(id: result.count, start: start, end: end,
                                                    oppositeAligned: line.oppositeAligned,
@@ -226,7 +226,7 @@ struct PreparedLyrics: Hashable {
         ]
     }
 
-    private static func words(from syllables: [LyricSyllable], romanized: Bool) -> [PreparedWord] {
+    private static func words(from syllables: [LyricSyllable], romanized: Bool, simple: Bool) -> [PreparedWord] {
         var words: [PreparedWord] = []
         var current: [PreparedSyllable] = []
         // Syllables are drawn left to right, so they must also light up left to right. Some
@@ -240,7 +240,7 @@ struct PreparedLyrics: Hashable {
             if !text.isEmpty {
                 let start = max(syllable.start, earliestStart)
                 earliestStart = start
-                current.append(prepare(text: text, start: start, end: max(syllable.end, start)))
+                current.append(prepare(text: text, start: start, end: max(syllable.end, start), simple: simple))
             }
             if !syllable.joinsNext, !current.isEmpty {
                 words.append(PreparedWord(syllables: current))
@@ -251,17 +251,21 @@ struct PreparedLyrics: Hashable {
         return words
     }
 
-    private static func prepare(text: String, start: Double, end: Double) -> PreparedSyllable {
+    /// `IsLetterCapable` and `Emphasize`: long syllables animate per letter. Simple Lyrics Mode
+    /// only does so for up to 12 letters lasting 1.05 s, and shifts the letters a little later.
+    private static func prepare(text: String, start: Double, end: Double, simple: Bool) -> PreparedSyllable {
         let characters = text.map(String.init)
-        let capable = end - start >= letterCapableDuration
-            && characters.count > 1
-            && !TextDirection.isRightToLeft(text)
+        let duration = end - start
+        let capable = characters.count > 1 && !TextDirection.isRightToLeft(text)
+            && (simple ? characters.count <= 12 && duration >= 1.05 : duration >= letterCapableDuration)
         guard capable else { return PreparedSyllable(text: text, start: start, end: end, letters: nil) }
 
-        let letterEnd = max(start + 0.05, end - emphasisEndSubtraction)
-        let each = (letterEnd - start) / Double(characters.count)
+        let letterStart = simple ? start + 0.021 : start
+        let letterEnd = simple ? end + 0.04 : max(start + 0.05, end - emphasisEndSubtraction)
+        let each = (letterEnd - letterStart) / Double(characters.count)
         let letters = characters.enumerated().map { index, character in
-            PreparedLetter(text: character, start: start + Double(index) * each, end: start + Double(index + 1) * each)
+            PreparedLetter(text: character, start: letterStart + Double(index) * each,
+                           end: letterStart + Double(index + 1) * each)
         }
         return PreparedSyllable(text: text, start: start, end: end, letters: letters)
     }

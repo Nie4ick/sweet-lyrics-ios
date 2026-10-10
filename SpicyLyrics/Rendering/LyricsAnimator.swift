@@ -70,6 +70,18 @@ private enum Curves {
 
     static let sungLetterGlow = glow.at(0.2)
 
+    // Simple Lyrics Mode (`$simpleLyricsMode`): words only drift up, letters get milder curves
+    // scaled by `SimpleLyricsMode_LetterEffectsStrengthConfig`, dots only fade.
+    static let simpleYOffset = CubicSpline([(0, 1.0 / 100), (1, -0.033)])
+    static let simpleLetterScale = CubicSpline([(0, 0.95), (0.7, 1.07), (1, 1)])
+    static let simpleLetterYOffset = CubicSpline([(0, 1.0 / 100), (0.9, -(1.0 / 62)), (1, 0)])
+    static let simpleDotOpacity = CubicSpline([(0, 0.27), (0.6, 1), (1, 1)])
+    /// `Animate()` runs Simple Lyrics Mode 33.5 ms behind.
+    static let simplePositionOffset = -0.0335
+    static let simpleLongerThan = 1.5
+    static let simpleLonger = (glow: 0.4, yOffset: 0.45, scale: 1.103)
+    static let simpleShorter = (glow: 0.285, yOffset: 0.1, scale: 1.09)
+
     // Spring tuning.
     static let yOffsetFrequency = 1.45, yOffsetDamping = 0.4
     static let scaleFrequency = 0.88, scaleDamping = 0.64
@@ -177,6 +189,8 @@ private struct LineSprings {
 /// `TimelineView` drives it once per frame and reads the resulting `visuals`.
 final class LyricsAnimator {
     let lyrics: PreparedLyrics
+    /// Simple Lyrics Mode.
+    let simple: Bool
     private(set) var visuals: [LineVisual]
     /// The line the view should keep in focus (scroll target and blur origin).
     private(set) var focusIndex: Int = 0
@@ -185,14 +199,16 @@ final class LyricsAnimator {
     private var lastFrame: CFTimeInterval?
     private var lastPosition: Double?
 
-    init(lyrics: PreparedLyrics) {
+    init(lyrics: PreparedLyrics, simple: Bool = false) {
         self.lyrics = lyrics
+        self.simple = simple
         springs = lyrics.lines.map(Self.makeSprings)
         visuals = lyrics.lines.map(Self.makeVisual)
     }
 
     /// Advances every spring to `position` (seconds). Safe to call more than once per frame.
     func step(position: Double, now: CFTimeInterval, blurEnabled: Bool) {
+        let position = position + (simple ? Curves.simplePositionOffset : 0)
         var dt = lastFrame.map { now - $0 } ?? (1.0 / 60)
         if dt <= 0 { return }
         dt = min(dt, 1.0 / 15)
@@ -271,7 +287,7 @@ final class LyricsAnimator {
                         targetGlow = Curves.lineGlow.at(1)
                         visual.line.gradient = 1
                     }
-                    lineSprings.glow.setGoal(targetGlow, replacePosition: jumped)
+                    lineSprings.glow.setGoal(simple ? 0 : targetGlow, replacePosition: jumped)
                     visual.line.glow = lineSprings.glow.step(dt)
                     if state != .active, lineSprings.glow.canSleep { lineSprings.awake = false }
                 }
@@ -293,6 +309,16 @@ final class LyricsAnimator {
                         case .sung: p = 1
                         }
                         var s = lineSprings.dots[k]
+                        if simple {
+                            // Simple mode: the dots only fade in.
+                            let opacityTarget = Curves.simpleDotOpacity.at(p)
+                            s.opacity.setGoal(opacityTarget, replacePosition: jumped)
+                            let opacity = s.opacity.step(dt)
+                            settled = settled && s.opacity.canSleep
+                            lineSprings.dots[k] = s
+                            visual.dots[k] = GlyphVisual(scale: 1, yOffset: 0, glow: 0, gradient: 1, opacity: opacity)
+                            continue
+                        }
                         if jumped {
                             s.glyph.scale.setGoal(Curves.dotScale.at(p), replacePosition: true)
                             s.glyph.yOffset.setGoal(Curves.dotYOffset.at(p), replacePosition: true)
@@ -376,6 +402,20 @@ final class LyricsAnimator {
     private func stepSyllable(_ syllable: PreparedSyllable, _ store: inout SyllableSprings, _ visual: inout SyllableVisual,
                               time: Double, dt: Double, snap: Bool) {
         let state = ElementState(time, syllable.start, syllable.end)
+        if simple {
+            // No scale or glow: the word drifts up while a wider, softer fill passes over it.
+            let p: Double
+            switch state {
+            case .notSung: p = 0; visual.glyph.gradient = -0.5
+            case .active: p = progress(time, syllable.start, syllable.end); visual.glyph.gradient = -0.5 + 1.2 * p
+            case .sung: p = 1; visual.glyph.gradient = 1
+            }
+            store.glyph.yOffset.setGoal(Curves.simpleYOffset.at(p), replacePosition: snap)
+            visual.glyph.yOffset = store.glyph.yOffset.step(dt)
+            visual.glyph.scale = 1
+            visual.glyph.glow = 0
+            return
+        }
         let p: Double
         switch state {
         case .notSung:
@@ -414,9 +454,15 @@ final class LyricsAnimator {
             }
         }
 
-        let restScale = Curves.letterScale.at(0)
-        let restY = Curves.letterYOffset.at(0)
+        let scaleCurve = simple ? Curves.simpleLetterScale : Curves.letterScale
+        let yCurve = simple ? Curves.simpleLetterYOffset : Curves.letterYOffset
+        let strength = syllable.end - syllable.start > Curves.simpleLongerThan ? Curves.simpleLonger : Curves.simpleShorter
+        // Simple mode scales the letter curves and drives them by the whole word's progress.
+        let wordProgress = progress(time, syllable.start, syllable.end)
+        let restScale = scaleCurve.at(0)
+        let restY = yCurve.at(0)
         let restGlow = Curves.glow.at(0)
+        let unlit = simple ? -0.5 : -0.2
 
         for k in letters.indices {
             let letter = letters[k]
@@ -426,18 +472,19 @@ final class LyricsAnimator {
 
             switch wordState {
             case .notSung:
-                gradient = -0.2
+                gradient = unlit
             case .sung:
-                targetScale = Curves.letterScale.at(1)
-                targetY = Curves.letterYOffset.at(1)
+                targetScale = scaleCurve.at(1)
+                targetY = yCurve.at(1)
                 targetGlow = Curves.glow.at(1)
                 gradient = 1
             case .active:
                 if activeLetter >= 0 {
                     // Proximity falloff around the letter being sung.
-                    let baseScale = Curves.letterScale.at(activeProgress)
-                    let baseY = Curves.letterYOffset.at(activeProgress)
-                    let baseGlow = Curves.glow.at(activeProgress)
+                    let count = simple ? wordProgress : activeProgress
+                    let baseScale = scaleCurve.at(count) * (simple ? strength.scale : 1)
+                    let baseY = yCurve.at(count) * (simple ? strength.yOffset : 1)
+                    let baseGlow = Curves.glow.at(count) * (simple ? strength.glow : 1)
                     let d = Double(abs(k - activeLetter))
                     let falloff = max(0, 1 / (1 + pow(d, 2.8)))
                     let glowFalloff = max(0, 1 / (1 + d * 0.9))
@@ -447,15 +494,17 @@ final class LyricsAnimator {
                 }
                 switch letterState {
                 case .notSung:
-                    targetScale = restScale
-                    targetY = restY
-                    targetGlow = restGlow
-                    gradient = -0.2
+                    if !simple {
+                        targetScale = restScale
+                        targetY = restY
+                        targetGlow = restGlow
+                    }
+                    gradient = unlit
                 case .sung:
                     if activeLetter == -1 { targetGlow = Curves.sungLetterGlow }
                     gradient = 1
                 case .active:
-                    gradient = k == activeLetter ? -0.2 + 1.2 * easeSinOut(activeProgress) : -0.2
+                    gradient = k == activeLetter ? unlit + 1.2 * easeSinOut(activeProgress) : unlit
                 }
             }
 

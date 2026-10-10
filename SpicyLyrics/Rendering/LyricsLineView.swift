@@ -7,19 +7,35 @@ struct LyricsTypography: Equatable {
     var cqw: CGFloat = 3.9
     /// The song has duet (opposite-aligned) lines.
     var hasDuets = false
+    /// Simple Lyrics Mode: softer, wider fill (`--gradient-offset: 30%`, alpha 1 → 0.3).
+    var simple = false
+    var centered = false
+    var font: LyricsFont = .standard
 
-    var leadFont: Font { .system(size: fontSize, weight: .bold) }
+    private var design: Font.Design {
+        switch font {
+        case .standard: return .default
+        case .rounded: return .rounded
+        case .serif: return .serif
+        }
+    }
+
+    var leadFont: Font { .system(size: fontSize, weight: .bold, design: design) }
+    /// Width of the lit → unlit fade, as a fraction of a glyph.
+    var fillFade: Double { simple ? 0.5 : 0.2 }
+    var leadAlpha: GradientAlpha { simple ? GradientAlpha(lit: 1, unlit: 0.3) : .lead }
     /// `.line.bg-line { --font-size: calc(var(--DefaultLyricsSize) * 0.75) }`
     var backgroundFontSize: CGFloat { fontSize * 0.75 }
-    var backgroundFont: Font { .system(size: backgroundFontSize, weight: .bold) }
+    var backgroundFont: Font { .system(size: backgroundFontSize, weight: .bold, design: design) }
     /// `.word::after { margin-right: 0.32ch }` (a "0" in the bold face is ~0.6em wide).
     func wordGap(_ size: CGFloat) -> CGFloat { size * 0.6 * 0.32 }
     /// `.line { margin: 1cqw 0 }`, collapsing between neighbours.
     var lineSpacing: CGFloat { cqw }
     /// Static lyrics: `--DefaultLyricsSize: 5cqw` against the synced 7cqw, weight 500.
-    var staticFont: Font { .system(size: fontSize * 5 / 7, weight: .medium) }
+    var staticFont: Font { .system(size: fontSize * 5 / 7, weight: .medium, design: design) }
     /// `.line { padding-right: 5cqw }`, or the 15cqw duet inset on the side a line leans away from.
     func insets(opposite: Bool) -> EdgeInsets {
+        if centered { return EdgeInsets(top: 0, leading: cqw * 5, bottom: 0, trailing: cqw * 5) }
         if hasDuets {
             return opposite ? EdgeInsets(top: 0, leading: cqw * 15, bottom: 0, trailing: 0)
                             : EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: cqw * 15)
@@ -29,6 +45,7 @@ struct LyricsTypography: Equatable {
 
     static func == (lhs: LyricsTypography, rhs: LyricsTypography) -> Bool {
         lhs.fontSize == rhs.fontSize && lhs.cqw == rhs.cqw && lhs.hasDuets == rhs.hasDuets
+            && lhs.simple == rhs.simple && lhs.centered == rhs.centered && lhs.font == rhs.font
     }
 }
 
@@ -68,13 +85,13 @@ enum GlowKind {
 }
 
 extension View {
-    /// Left-to-right fill: fully lit before `position`, unlit from `position + 0.2` on.
-    func lyricFill(_ position: Double, alpha: GradientAlpha) -> some View {
+    /// Left-to-right fill: fully lit before `position`, unlit from `position + fade` on.
+    func lyricFill(_ position: Double, alpha: GradientAlpha, fade: Double = 0.2) -> some View {
         foregroundStyle(
             LinearGradient(
                 colors: [.white.opacity(alpha.lit), .white.opacity(alpha.unlit)],
                 startPoint: UnitPoint(x: position, y: 0.5),
-                endPoint: UnitPoint(x: position + 0.2, y: 0.5)
+                endPoint: UnitPoint(x: position + fade, y: 0.5)
             )
         )
     }
@@ -101,9 +118,11 @@ struct LyricLineView: View, Equatable {
         lhs.line.id == rhs.line.id && lhs.visual == rhs.visual && lhs.typography == rhs.typography
     }
 
-    private var horizontalAlignment: HorizontalAlignment { line.oppositeAligned ? .trailing : .leading }
-    private var frameAlignment: Alignment { line.oppositeAligned ? .trailing : .leading }
-    private var textAlignment: TextAlignment { line.oppositeAligned ? .trailing : .leading }
+    private var horizontalAlignment: HorizontalAlignment {
+        typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading)
+    }
+    private var frameAlignment: Alignment { typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading) }
+    private var textAlignment: TextAlignment { typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading) }
 
     var body: some View {
         content
@@ -125,7 +144,7 @@ struct LyricLineView: View, Equatable {
                     WordFlowView(words: lead, visuals: visual.lead,
                                  fontSize: line.isBackground ? typography.backgroundFontSize : typography.fontSize,
                                  font: line.isBackground ? typography.backgroundFont : typography.leadFont,
-                                 alpha: line.isBackground ? .background : .lead, typography: typography,
+                                 alpha: line.isBackground ? .background : typography.leadAlpha, typography: typography,
                                  alignment: horizontalAlignment)
                 }
                 if !background.isEmpty {
@@ -139,10 +158,10 @@ struct LyricLineView: View, Equatable {
             Text(text)
                 .font(typography.leadFont)
                 .multilineTextAlignment(textAlignment)
-                .lyricFill(visual.line.gradient, alpha: .lead)
+                .lyricFill(visual.line.gradient, alpha: typography.leadAlpha, fade: typography.fillFade)
                 .lyricGlow(visual.state == .active ? visual.line.glow : 0, kind: .line)
                 // Active line-synced lines grow to 1.05 from their aligned edge.
-                .scaleEffect(visual.scale, anchor: line.oppositeAligned ? .trailing : .leading)
+                .scaleEffect(visual.scale, anchor: typography.centered ? .center : (line.oppositeAligned ? .trailing : .leading))
 
         case .static(let text):
             Text(text)
@@ -189,6 +208,7 @@ private struct WordFlowView: View {
         FlowLayout(alignment: alignment, spacing: typography.wordGap(fontSize), rowSpacing: 0) {
             ForEach(items) { item in
                 SyllableView(
+                    fade: typography.fillFade,
                     syllable: words[item.w].syllables[item.s],
                     visual: visuals.indices.contains(item.w) && visuals[item.w].indices.contains(item.s)
                         ? visuals[item.w][item.s] : SyllableVisual(),
@@ -203,6 +223,7 @@ private struct WordFlowView: View {
 }
 
 private struct SyllableView: View {
+    let fade: Double
     let syllable: PreparedSyllable
     let visual: SyllableVisual
     let fontSize: CGFloat
@@ -214,12 +235,12 @@ private struct SyllableView: View {
             HStack(spacing: 0) {
                 ForEach(letters.indices, id: \.self) { i in
                     GlyphView(text: letters[i].text, visual: visual.letters[i], fontSize: fontSize,
-                              font: font, alpha: alpha, glowKind: .letter)
+                              font: font, alpha: alpha, fade: fade, glowKind: .letter)
                 }
             }
         } else {
             GlyphView(text: syllable.text, visual: visual.glyph, fontSize: fontSize,
-                      font: font, alpha: alpha, glowKind: .syllable)
+                      font: font, alpha: alpha, fade: fade, glowKind: .syllable)
         }
     }
 }
@@ -230,13 +251,14 @@ private struct GlyphView: View {
     let fontSize: CGFloat
     let font: Font
     let alpha: GradientAlpha
+    let fade: Double
     let glowKind: GlowKind
 
     var body: some View {
         Text(text)
             .font(font)
             .fixedSize()
-            .lyricFill(visual.gradient, alpha: alpha)
+            .lyricFill(visual.gradient, alpha: alpha, fade: fade)
             .lyricGlow(visual.glow, kind: glowKind)
             .scaleEffect(visual.scale)
             .offset(y: visual.yOffset * fontSize)

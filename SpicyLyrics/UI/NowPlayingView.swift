@@ -99,6 +99,7 @@ struct NowPlayingView: View {
                 .presentationDragIndicator(.visible)
         }
         .onChange(of: settings.showRomanization) { _, _ in player.settingsChanged() }
+        .onChange(of: settings.simpleLyricsMode) { _, _ in player.settingsChanged() }
         .alert("Spotify", isPresented: Binding(
             get: { player.transientError != nil },
             set: { if !$0 { player.transientError = nil } }
