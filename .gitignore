@@ -20,3 +20,4 @@ Config/Secrets.xcconfig
 SpicyLyrics/Generated/
 *.log
 build-check/
+__pycache__/
