@@ -117,7 +117,7 @@ struct NowPlayingView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .offset(x: headerSwipe)
-        .opacity(1 - min(abs(headerSwipe) / 160, 0.6))
+        .opacity(1 - min(Double(abs(headerSwipe)) / 160, 0.6))
         .onTapGesture { showPicker = true }
         .gesture(
             DragGesture(minimumDistance: 20)
