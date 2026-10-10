@@ -169,20 +169,34 @@ private struct WordFlowView: View {
     let typography: LyricsTypography
     let alignment: HorizontalAlignment
 
+    /// Syllables in reading order, each knowing whether it is glued to the next (same word).
+    private var items: [FlowItem] {
+        words.indices.flatMap { w in
+            words[w].syllables.indices.map { s in
+                FlowItem(id: w * 10_000 + s, w: w, s: s, gluedToNext: s < words[w].syllables.count - 1)
+            }
+        }
+    }
+
+    private struct FlowItem: Identifiable {
+        let id: Int
+        let w: Int
+        let s: Int
+        let gluedToNext: Bool
+    }
+
     var body: some View {
         FlowLayout(alignment: alignment, spacing: typography.wordGap(fontSize), rowSpacing: 0) {
-            ForEach(words.indices, id: \.self) { w in
-                HStack(spacing: 0) {
-                    ForEach(words[w].syllables.indices, id: \.self) { s in
-                        SyllableView(
-                            syllable: words[w].syllables[s],
-                            visual: visuals.indices.contains(w) && visuals[w].indices.contains(s) ? visuals[w][s] : SyllableVisual(),
-                            fontSize: fontSize,
-                            font: font,
-                            alpha: alpha
-                        )
-                    }
-                }
+            ForEach(items) { item in
+                SyllableView(
+                    syllable: words[item.w].syllables[item.s],
+                    visual: visuals.indices.contains(item.w) && visuals[item.w].indices.contains(item.s)
+                        ? visuals[item.w][item.s] : SyllableVisual(),
+                    fontSize: fontSize,
+                    font: font,
+                    alpha: alpha
+                )
+                .layoutValue(key: GluedToNext.self, value: item.gluedToNext)
             }
         }
     }
@@ -273,38 +287,71 @@ private struct InterludeDotsView: View {
 // MARK: - Flow layout
 
 /// Wrapping row layout: places subviews left to right and starts a new row when out of width.
+/// The next item belongs to the same word: keep them on one row when the word fits.
+struct GluedToNext: LayoutValueKey {
+    static let defaultValue = false
+}
+
+/// Wrapping row layout for syllables. Words (runs of glued syllables) stay together and wrap as
+/// a unit, like text; a word wider than the whole row (Japanese and Chinese lines are often one
+/// long "word" with no spaces) breaks between its syllables instead of running off screen.
 struct FlowLayout: Layout {
     var alignment: HorizontalAlignment = .leading
     var spacing: CGFloat
     var rowSpacing: CGFloat
 
     private struct Row {
-        var indices: [Int] = []
+        var items: [(index: Int, x: CGFloat)] = []
         var width: CGFloat = 0
         var height: CGFloat = 0
+
+        mutating func append(_ index: Int, size: CGSize, gap: CGFloat) {
+            let x = items.isEmpty ? 0 : width + gap
+            items.append((index, x))
+            width = x + size.width
+            height = max(height, size.height)
+        }
     }
 
     private func arrangeRows(for subviews: Subviews, maxWidth: CGFloat) -> ([Row], [CGSize]) {
-        let sizes = subviews.map { subview -> CGSize in
-            let ideal = subview.sizeThatFits(.unspecified)
-            if ideal.width > maxWidth {
-                return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+
+        // Words: runs of glued subviews.
+        var words: [[Int]] = []
+        var current: [Int] = []
+        for index in subviews.indices {
+            current.append(index)
+            if !subviews[index][GluedToNext.self] {
+                words.append(current)
+                current = []
             }
-            return ideal
         }
+        if !current.isEmpty { words.append(current) }
+
         var rows: [Row] = []
-        var current = Row()
-        for (index, size) in sizes.enumerated() {
-            let needed = current.indices.isEmpty ? size.width : current.width + spacing + size.width
-            if needed > maxWidth, !current.indices.isEmpty {
-                rows.append(current)
-                current = Row()
-            }
-            current.width = current.indices.isEmpty ? size.width : current.width + spacing + size.width
-            current.height = max(current.height, size.height)
-            current.indices.append(index)
+        var row = Row()
+        func newRow() {
+            if !row.items.isEmpty { rows.append(row) }
+            row = Row()
         }
-        if !current.indices.isEmpty { rows.append(current) }
+
+        for word in words {
+            let wordWidth = word.reduce(0) { $0 + sizes[$1].width }
+            if wordWidth <= maxWidth {
+                if !row.items.isEmpty, row.width + spacing + wordWidth > maxWidth { newRow() }
+                for (k, index) in word.enumerated() {
+                    row.append(index, size: sizes[index], gap: k == 0 ? spacing : 0)
+                }
+            } else {
+                // Too long for any row: break between its syllables.
+                for (k, index) in word.enumerated() {
+                    let gap: CGFloat = k == 0 ? spacing : 0
+                    if !row.items.isEmpty, row.width + gap + sizes[index].width > maxWidth { newRow() }
+                    row.append(index, size: sizes[index], gap: gap)
+                }
+            }
+        }
+        newRow()
         return (rows, sizes)
     }
 
@@ -320,20 +367,19 @@ struct FlowLayout: Layout {
         let (rows, sizes) = arrangeRows(for: subviews, maxWidth: bounds.width)
         var y = bounds.minY
         for row in rows {
-            var x: CGFloat
+            let start: CGFloat
             switch alignment {
-            case .trailing: x = bounds.maxX - row.width
-            case .center: x = bounds.minX + (bounds.width - row.width) / 2
-            default: x = bounds.minX
+            case .trailing: start = bounds.maxX - row.width
+            case .center: start = bounds.minX + (bounds.width - row.width) / 2
+            default: start = bounds.minX
             }
-            for index in row.indices {
-                let size = sizes[index]
-                subviews[index].place(
-                    at: CGPoint(x: x, y: y + (row.height - size.height)),
+            for item in row.items {
+                let size = sizes[item.index]
+                subviews[item.index].place(
+                    at: CGPoint(x: start + item.x, y: y + (row.height - size.height)),
                     anchor: .topLeading,
                     proposal: ProposedViewSize(size)
                 )
-                x += size.width + spacing
             }
             y += row.height + rowSpacing
         }
