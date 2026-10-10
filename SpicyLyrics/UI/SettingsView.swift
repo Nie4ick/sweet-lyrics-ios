@@ -81,6 +81,7 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    LabeledContent("Версия", value: AppVersion.display)
                     Link("Spicy Lyrics (оригинал)", destination: URL(string: "https://github.com/Spikerko/spicy-lyrics")!)
                     Link("Spicy Lyrics Mobile (Android)", destination: URL(string: "https://github.com/spicylyrics/mobile")!)
                     Link("LRCLIB", destination: URL(string: "https://lrclib.net")!)
