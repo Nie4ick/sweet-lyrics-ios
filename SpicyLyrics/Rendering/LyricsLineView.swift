@@ -108,6 +108,8 @@ struct LyricLineView: View, Equatable {
     var body: some View {
         content
             .padding(typography.insets(opposite: line.oppositeAligned))
+            // `.bg-line { margin: -1cqw 0 1cqw }`: tucked right under the line above.
+            .padding(.top, line.isBackground ? -typography.lineSpacing : 0)
             .frame(maxWidth: .infinity, alignment: frameAlignment)
             .opacity(visual.opacity)
             .blur(radius: visual.blur > 0.05 ? visual.blur / 2 : 0)
@@ -120,8 +122,10 @@ struct LyricLineView: View, Equatable {
             // `.bg-line { margin: -1cqw 0 1cqw }` cancels the gap under the lead line.
             VStack(alignment: horizontalAlignment, spacing: 0) {
                 if !lead.isEmpty {
-                    WordFlowView(words: lead, visuals: visual.lead, fontSize: typography.fontSize,
-                                 font: typography.leadFont, alpha: .lead, typography: typography,
+                    WordFlowView(words: lead, visuals: visual.lead,
+                                 fontSize: line.isBackground ? typography.backgroundFontSize : typography.fontSize,
+                                 font: line.isBackground ? typography.backgroundFont : typography.leadFont,
+                                 alpha: line.isBackground ? .background : .lead, typography: typography,
                                  alignment: horizontalAlignment)
                 }
                 if !background.isEmpty {
@@ -227,33 +231,39 @@ private struct GlyphView: View {
 
 // MARK: - Interlude
 
-/// The "•••" row of an instrumental gap (`.musical-line .dotGroup`): three "•" glyphs at 1.3× the
-/// lyric size, packed tight, each with its own springs; the whole group pops in and out.
+/// The "•••" row of an instrumental gap (`.musical-line .dotGroup`): three dots at 1.3× the lyric
+/// size, packed tight, each with its own springs; the whole group pops in and out.
+///
+/// The extension draws "•" in its own font, whose bullet is 0.348 em across on a 0.485 em advance
+/// (SF Pro's is only 0.246 em), so the dots are drawn as circles of exactly that size.
 private struct InterludeDotsView: View {
     let dots: [GlyphVisual]
     let presence: Double
     let groupScale: Double
     let typography: LyricsTypography
 
+    private static let bulletDiameter: CGFloat = 0.348
+    private static let bulletAdvance: CGFloat = 0.485
+
     var body: some View {
-        let dotSize = typography.fontSize * 1.3
+        let dotFont = typography.fontSize * 1.3
+        let diameter = dotFont * Self.bulletDiameter
         // `--dot-gap: clamp(0.005rem, 1.7cqw, 0.18rem)`
         let gap = min(max(0.08, typography.cqw * 1.7), 2.88)
         if presence > 0 {
             HStack(spacing: gap) {
                 ForEach(dots.indices, id: \.self) { i in
                     let dot = dots[i]
-                    Text("•")
-                        .font(.system(size: dotSize, weight: .bold))
-                        .foregroundStyle(.white.opacity(GradientAlpha.lead.lit))
-                        .fixedSize()
+                    Circle()
+                        .fill(.white.opacity(GradientAlpha.lead.lit))
+                        .frame(width: diameter, height: diameter)
+                        .frame(width: dotFont * Self.bulletAdvance)
                         .opacity(dot.opacity)
                         .lyricGlow(dot.glow, kind: .dot)
                         .scaleEffect(dot.scale)
                         .offset(y: dot.yOffset * typography.fontSize)
                 }
             }
-            // `line-height: 0.65` on the dots; the row itself keeps the lyric line height.
             .frame(height: typography.fontSize * 1.18)
             .scaleEffect(max(groupScale, 0.0001), anchor: .center)
         }

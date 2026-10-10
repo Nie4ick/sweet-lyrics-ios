@@ -11,6 +11,11 @@ struct NowPlayingView: View {
     @State private var showSettings = false
     @State private var showPicker = false
     @State private var showSetupGuide = false
+    @State private var showOwnLyrics = false
+    /// Big ⏭/⏮ flash after a swipe changes the track.
+    @State private var skipFeedback: SkipDirection?
+    @State private var skipCount = 0
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var chromeVisible = true
     /// Bumped on every touch; restarts the auto-hide countdown.
     @State private var interactionTick = 0
@@ -23,7 +28,9 @@ struct NowPlayingView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let landscape = geometry.size.width > geometry.size.height && geometry.size.width > 560
+            let size = geometry.size
+            // Side by side in landscape, and on iPad in any orientation (wide enough for both).
+            let landscape = (size.width > size.height && size.width > 560) || size.width >= 700
             ZStack {
                 DynamicBackground(
                     image: settings.dynamicBackground ? player.backgroundArtwork : nil,
@@ -36,8 +43,20 @@ struct NowPlayingView: View {
                 } else {
                     portraitLayout(geometry.size)
                 }
+
+                if let skipFeedback {
+                    Image(systemName: skipFeedback == .next ? "forward.fill" : "backward.fill")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.white)
+                        .padding(30)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                        .allowsHitTesting(false)
+                }
             }
         }
+        .sensoryFeedback(.impact(weight: .light), trigger: skipCount)
+        .background { keyboardShortcuts }
         .statusBarHidden(!chromeVisible)
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
         .task(id: AutoHideKey(tick: interactionTick, eligible: canAutoHide)) {
@@ -67,6 +86,10 @@ struct NowPlayingView: View {
             }
             .environment(settings)
             .environmentObject(auth)
+        }
+        .sheet(isPresented: $showOwnLyrics) {
+            OwnLyricsView()
+                .environment(player)
         }
         .sheet(isPresented: $showPicker) {
             TrackPickerView()
@@ -103,7 +126,7 @@ struct NowPlayingView: View {
 
     private var canAutoHide: Bool {
         settings.autoHideControls && chromeVisible && player.isPlaying && lyricsLoaded
-            && !showSettings && !showPicker && !showSetupGuide
+            && !showSettings && !showPicker && !showSetupGuide && !showOwnLyrics
     }
 
     private func showChrome() {
@@ -119,6 +142,37 @@ struct NowPlayingView: View {
 
     private func hideChrome() {
         withAnimation(Self.chromeAnimation) { chromeVisible = false }
+    }
+
+    // MARK: Gestures & keyboard
+
+    private enum SkipDirection { case next, previous }
+
+    /// Swipe across the lyrics: next / previous track with a flash and a light tap.
+    private func skip(_ direction: SkipDirection) {
+        if direction == .next { player.next() } else { player.previous() }
+        skipCount += 1
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { skipFeedback = direction }
+        Task {
+            try? await Task.sleep(for: .milliseconds(650))
+            guard skipFeedback == direction else { return }
+            withAnimation(.easeOut(duration: 0.25)) { skipFeedback = nil }
+        }
+    }
+
+    /// Hardware keyboard (iPad): space plays/pauses, ⌘← / ⌘→ change tracks.
+    private var keyboardShortcuts: some View {
+        ZStack {
+            Button("Пауза / воспроизведение") { player.togglePlay() }
+                .keyboardShortcut(.space, modifiers: [])
+            Button("Следующий трек") { player.next() }
+                .keyboardShortcut(.rightArrow, modifiers: .command)
+            Button("Предыдущий трек") { player.previous() }
+                .keyboardShortcut(.leftArrow, modifiers: .command)
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     // MARK: Portrait
@@ -150,7 +204,27 @@ struct NowPlayingView: View {
                     .offset(y: chromeVisible ? 0 : 40)
             }
             .allowsHitTesting(chromeVisible)
+
+            // Like Apple Music: while the controls are hidden, where they live is not part of the
+            // lyrics. A tap there brings them back instead of seeking to a line.
+            if !chromeVisible {
+                VStack(spacing: 0) {
+                    wakeZone.frame(height: headerHeight)
+                    Spacer(minLength: 0)
+                    wakeZone.frame(height: controlsHeight)
+                }
+            }
         }
+    }
+
+    /// Invisible area that shows the controls on tap.
+    private var wakeZone: some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onTapGesture { showChrome() }
+            .verticalSwipe(.up) { showChrome() }
+            .accessibilityLabel("Показать элементы управления")
+            .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Landscape
@@ -196,6 +270,10 @@ struct NowPlayingView: View {
                 Spacer(minLength: 0)
             }
             .frame(width: column)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            // Empty space in the column toggles the controls (the buttons keep their own taps).
+            .onTapGesture { toggleChrome() }
             .padding(.leading, 12)
             .opacity(columnEmpty ? 0 : 1)
 
@@ -204,6 +282,11 @@ struct NowPlayingView: View {
         }
         .frame(width: size.width, alignment: .leading)
         .offset(x: columnEmpty ? -(column + 12) / 2 : 0)
+        .overlay(alignment: .bottom) {
+            if !chromeVisible {
+                wakeZone.frame(height: size.height * 0.2)
+            }
+        }
         .animation(Self.chromeAnimation, value: showArtwork)
         .animation(Self.chromeAnimation, value: showTitle)
     }
@@ -216,6 +299,8 @@ struct NowPlayingView: View {
             moreMenu
         }
         .foregroundStyle(.white)
+        // Swipe the header down to tuck the controls away.
+        .verticalSwipe(.down) { hideChrome() }
     }
 
     /// Small artwork and title. Tap to pick a track, swipe sideways to skip.
@@ -301,6 +386,11 @@ struct NowPlayingView: View {
             } label: {
                 Label("Перезагрузить текст", systemImage: "arrow.clockwise")
             }
+            Button {
+                showOwnLyrics = true
+            } label: {
+                Label("Свой текст (TTML)", systemImage: "doc.text")
+            }
             Divider()
             Button {
                 showSettings = true
@@ -313,6 +403,7 @@ struct NowPlayingView: View {
                 .foregroundStyle(.white)
                 .frame(width: 30, height: 30)
                 .background(.white.opacity(0.18), in: Circle())
+                .hoverEffect(.highlight)
         }
         .simultaneousGesture(TapGesture().onEnded { showChrome() })
     }
@@ -352,14 +443,37 @@ struct NowPlayingView: View {
 
     // MARK: Lyrics
 
-    @ViewBuilder
     private func lyricsArea(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat) -> some View {
+        lyricsContent(topInset: topInset, bottomInset: bottomInset, horizontalPadding: horizontalPadding)
+            // Until Spotify confirms what is playing, the lyrics on screen may be stale.
+            .opacity(player.isResyncing ? 0.3 : 1)
+            .overlay(alignment: .top) {
+                if player.isResyncing {
+                    Label("Синхронизация со Spotify…", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.top, topInset + 8)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: player.isResyncing)
+            .trackSwipes(enabled: settings.gesturesEnabled && player.track != nil,
+                         onNext: { skip(.next) }, onPrevious: { skip(.previous) })
+    }
+
+    /// iPad: the extension sizes lyrics at 7% of the container width, so wide screens get more.
+    private var lyricFontScale: CGFloat { sizeClass == .regular ? 1.35 : 1 }
+
+    @ViewBuilder
+    private func lyricsContent(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat) -> some View {
         switch player.lyricsState {
         case .loaded(let lyrics):
             LyricsView(
                 lyrics: lyrics, player: player, settings: settings,
                 topInset: topInset, bottomInset: bottomInset,
-                horizontalPadding: horizontalPadding, reduced: reduced,
+                horizontalPadding: horizontalPadding, reduced: reduced, fontScale: lyricFontScale,
                 onInteraction: { showChrome() },
                 onBackgroundTap: { toggleChrome() }
             )

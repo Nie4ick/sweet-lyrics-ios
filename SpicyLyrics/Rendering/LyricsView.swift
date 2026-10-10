@@ -12,6 +12,8 @@ struct LyricsView: View {
     var horizontalPadding: CGFloat = 24
     /// Go easy on the GPU (Low Power Mode, a hot phone or the user's choice): 30 fps, no line blur.
     var reduced = false
+    /// Bigger lyrics on wide screens (iPad), like the extension's `7cqw` font size.
+    var fontScale: CGFloat = 1
     /// Any touch or scroll on the lyrics (shows the controls again).
     var onInteraction: () -> Void = {}
     /// A tap on empty space between lines (toggles the controls).
@@ -20,10 +22,12 @@ struct LyricsView: View {
     @State private var animator: LyricsAnimator
     @State private var userScrolling = false
     @State private var resumeAutoScrollAt: Date = .distantPast
+    /// Live two-finger pinch, applied to the font size until the fingers lift.
+    @State private var pinchScale: CGFloat = 1
 
     init(lyrics: PreparedLyrics, player: PlayerModel, settings: AppSettings,
          topInset: CGFloat = 0, bottomInset: CGFloat = 0, horizontalPadding: CGFloat = 24,
-         reduced: Bool = false,
+         reduced: Bool = false, fontScale: CGFloat = 1,
          onInteraction: @escaping () -> Void = {}, onBackgroundTap: @escaping () -> Void = {}) {
         self.lyrics = lyrics
         self.player = player
@@ -32,6 +36,7 @@ struct LyricsView: View {
         self.bottomInset = bottomInset
         self.horizontalPadding = horizontalPadding
         self.reduced = reduced
+        self.fontScale = fontScale
         self.onInteraction = onInteraction
         self.onBackgroundTap = onBackgroundTap
         _animator = State(initialValue: LyricsAnimator(lyrics: lyrics))
@@ -42,7 +47,8 @@ struct LyricsView: View {
 
     private func typography(width: CGFloat) -> LyricsTypography {
         LyricsTypography(
-            fontSize: CGFloat(settings.fontSize),
+            fontSize: clamp(CGFloat(settings.fontSize) * pinchScale, AppSettings.fontRange.lowerBound,
+                            AppSettings.fontRange.upperBound) * fontScale,
             cqw: max(width, 1) / 100,
             hasDuets: shown.lines.contains(where: \.oppositeAligned)
         )
@@ -89,6 +95,7 @@ struct LyricsView: View {
                                         resumeAutoScrollAt = .distantPast
                                         player.seek(to: max(0, line.start - settings.timingOffsetMs / 1000))
                                     }
+                                    .contextMenu { lineMenu(line) }
                                     .id(line.id)
                             }
                             LyricsCreditsView(lyrics: shown, lyricSize: typography.fontSize)
@@ -127,6 +134,44 @@ struct LyricsView: View {
                     }
                 })
                 .mask(EdgeFade(top: topInset, bottom: bottomInset))
+                // Pinch to resize the lyrics; saved when the fingers lift.
+                .pinch(enabled: settings.gesturesEnabled) { scale in
+                    pinchScale = scale
+                } onEnd: { scale in
+                    let size = clamp(settings.fontSize * Double(scale), Double(AppSettings.fontRange.lowerBound),
+                                     Double(AppSettings.fontRange.upperBound))
+                    settings.fontSize = size.rounded()
+                    pinchScale = 1
+                }
+            }
+        }
+    }
+}
+
+extension LyricsView {
+    /// Long press on a line.
+    @ViewBuilder
+    func lineMenu(_ line: PreparedLine) -> some View {
+        if !line.isInterlude {
+            if shown.kind != .static {
+                Button {
+                    player.seek(to: max(0, line.start - settings.timingOffsetMs / 1000))
+                } label: {
+                    Label("Перемотать сюда", systemImage: "play.circle")
+                }
+            }
+            Button {
+                UIPasteboard.general.string = line.plainText
+            } label: {
+                Label("Скопировать строку", systemImage: "doc.on.doc")
+            }
+            Button {
+                UIPasteboard.general.string = shown.lines.filter { !$0.isInterlude }.map(\.plainText).joined(separator: "\n")
+            } label: {
+                Label("Скопировать весь текст", systemImage: "doc.on.doc.fill")
+            }
+            ShareLink(item: line.plainText) {
+                Label("Поделиться строкой", systemImage: "square.and.arrow.up")
             }
         }
     }

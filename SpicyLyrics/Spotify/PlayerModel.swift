@@ -60,34 +60,50 @@ final class PlayerModel {
     @ObservationIgnored private var anchorTime: CFTimeInterval = CACurrentMediaTime()
     @ObservationIgnored private var slew: Double = 0
     @ObservationIgnored private var slewSpan: Double = 0.8
-    /// Recent differences between Spotify's reported position and our clock, newest last.
-    @ObservationIgnored private var recentDrift: [Double] = []
-    /// First poll of a run in which Spotify claimed to play but the position did not move.
-    @ObservationIgnored private var stall: (progress: Double, at: CFTimeInterval)?
+    /// The previous report, to tell a live position from a frozen one.
+    @ObservationIgnored private var lastSample: (progress: Double, measuredAt: CFTimeInterval, stamp: Double?)?
+    /// Spotify only updates this device's position on play / pause / seek (its phone app does
+    /// this): between those, `progress_ms` stays put and must not be read as a pause.
+    @ObservationIgnored private var frozenReports = false
+    /// Consecutive live reports far behind our clock (a seek back on another device).
+    @ObservationIgnored private var behindStreak = 0
     @ObservationIgnored private var holdUntil: CFTimeInterval = 0
     @ObservationIgnored private var backoffUntil: CFTimeInterval = 0
 
     private static let slewDuration: Double = 0.8
-    /// Larger differences are treated as a seek and applied at once.
+    /// Being behind Spotify by more than this jumps instead of catching up smoothly.
     private static let resyncThreshold: Double = 1.0
-    /// Corrections smaller than this are noise in Spotify's reported position.
-    private static let driftDeadband: Double = 0.04
-    /// Spotify sometimes keeps reporting `is_playing` after a pause; a position frozen this long
-    /// means it is paused.
-    private static let stallTimeout: Double = 1.8
+    /// Being behind by less than this is noise.
+    private static let catchUpThreshold: Double = 0.12
+    /// A live report this far behind us, twice in a row, is a seek back elsewhere.
+    private static let seekBackThreshold: Double = 2.5
 
-    init(api: SpotifyAPI, lyrics: LyricsService, settings: AppSettings) {
+    /// The user's saved TTML files.
+    @ObservationIgnored let localLyrics: LocalLyricsStore
+    /// TTML applied "just once": kept for its track until the app quits.
+    @ObservationIgnored private var temporaryLyrics: [String: LyricsDocument] = [:]
+
+    init(api: SpotifyAPI, lyrics: LyricsService, settings: AppSettings, localLyrics: LocalLyricsStore) {
         self.api = api
         self.lyrics = lyrics
         self.settings = settings
+        self.localLyrics = localLyrics
     }
 
     // MARK: Clock
 
-    /// Lyrics clock in seconds at media time `now`: playback position plus the user's offset.
+    /// Lyrics clock in seconds at media time `now`: playback position plus the user's offset,
+    /// minus the audio output's delay when Spotify plays on this phone (Bluetooth headphones).
     func position(at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
-        playbackPosition(at: now) + settings.timingOffsetMs / 1000
+        let latency = settings.compensateOutputLatency && playingOnThisPhone ? outputLatency : 0
+        return playbackPosition(at: now) + settings.timingOffsetMs / 1000 - latency
     }
+
+    /// True from (re)starting the poll until Spotify has answered: what is on screen may be an
+    /// old track (the app was in the background while the song changed).
+    private(set) var isResyncing = false
+    @ObservationIgnored private var outputLatency: Double = 0
+    @ObservationIgnored private var playingOnThisPhone = false
 
     /// Spotify's playback position in seconds at media time `now`.
     func playbackPosition(at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
@@ -106,68 +122,102 @@ final class PlayerModel {
         anchorPosition = position
         anchorTime = now
         slew = 0
-        recentDrift.removeAll()
+        behindStreak = 0
     }
 
-    /// Spotify can report `is_playing` for a while after playback was paused (from the Spotify
-    /// app, headphones or the lock screen). If the position stops moving, believe the position.
-    private func detectStall(_ snapshot: PlaybackSnapshot, trackChanged: Bool) -> Bool {
-        guard snapshot.isPlaying, !trackChanged else {
-            stall = nil
-            return false
-        }
-        if let stall, abs(snapshot.progress - stall.progress) < 0.25 {
-            return snapshot.measuredAt - stall.at >= Self.stallTimeout
-        }
-        stall = (snapshot.progress, snapshot.measuredAt)
-        return false
+    /// Blends the clock toward `target` over a short span instead of jumping (a jump back would
+    /// re-light sung words, a jump forward skips them).
+    private func blend(to target: Double, predicted: Double, now: CFTimeInterval) {
+        anchorPosition = predicted
+        anchorTime = now
+        slew = target - predicted
+        // At most ±50 % speed while correcting, so the clock never stalls or runs backwards.
+        slewSpan = max(Self.slewDuration, abs(slew) * 2)
     }
 
     private func apply(_ snapshot: PlaybackSnapshot?) {
-        guard var snapshot else {
+        guard let snapshot else {
             // No active device. Keep the last track on screen, just stop the clock.
             if isPlaying {
                 setClock(rawPosition(at: CACurrentMediaTime()))
                 isPlaying = false
             }
-            stall = nil
+            lastSample = nil
             statusMessage = "Сейчас ничего не играет в Spotify"
             return
         }
         statusMessage = nil
         contextURI = snapshot.contextURI
         deviceName = snapshot.deviceName
+        // A "Smartphone" device is (almost always) this iPhone: its audio route delay applies.
+        playingOnThisPhone = snapshot.deviceType?.lowercased() == "smartphone"
+        outputLatency = AudioRoute.outputLatency
 
         let now = CACurrentMediaTime()
         let trackChanged = content != snapshot.content
-        if detectStall(snapshot, trackChanged: trackChanged) {
-            snapshot.isPlaying = false
-        }
         // Right after a control action, polls may still describe the old state.
         if now < holdUntil && !trackChanged { return }
 
+        // Live or frozen? A playing position that did not move between two reports is frozen:
+        // Spotify only refreshes it on play / pause / seek for some devices (its phone app).
+        var stampChanged = false
+        if let last = lastSample, !trackChanged, snapshot.isPlaying, isPlaying {
+            if snapshot.measuredAt - last.measuredAt > 0.8 {
+                frozenReports = abs(snapshot.progress - last.progress) < 0.15
+            }
+            stampChanged = snapshot.stateChangedAt != nil && snapshot.stateChangedAt != last.stamp
+        } else if trackChanged {
+            frozenReports = false
+        }
+        lastSample = (snapshot.progress, snapshot.measuredAt, snapshot.stateChangedAt)
+
         let measured = snapshot.progress + (snapshot.isPlaying ? now - snapshot.measuredAt : 0)
+        // On a frozen device `progress_ms` is the position at `timestamp` (the last state change).
+        var stampEstimate: Double?
+        if frozenReports, snapshot.isPlaying, let stamp = snapshot.stateChangedAt {
+            let estimate = snapshot.progress + (Date().timeIntervalSince1970 - stamp)
+            if estimate >= snapshot.progress, estimate <= (track?.duration ?? .infinity) + 1 {
+                stampEstimate = estimate
+            }
+        }
+
         let stateChanged = isPlaying != snapshot.isPlaying
         let predicted = rawPosition(at: now)
         // Part of the previous correction not blended in yet: the clock is already heading there.
         let unapplied = isPlaying ? slew * (1 - min(1, max(0, now - anchorTime) / slewSpan)) : 0
-        let drift = measured - (predicted + unapplied)
-        if trackChanged || stateChanged || !snapshot.isPlaying || abs(drift) > Self.resyncThreshold {
+        let target = predicted + unapplied
+
+        if trackChanged || stateChanged || !snapshot.isPlaying || isResyncing {
+            // Play, pause, a new song or the first report after the background: Spotify's
+            // position is exact at these moments.
             setClock(measured, at: now)
+        } else if frozenReports {
+            // Keep our own clock; the frozen value only says where the last change happened.
+            if stampChanged, let stampEstimate {
+                setClock(stampEstimate, at: now) // a seek elsewhere
+            } else if let stampEstimate, stampEstimate - target > Self.catchUpThreshold {
+                // Opened mid-song, the first report was the stale frozen value: catch up.
+                if stampEstimate - target > Self.resyncThreshold {
+                    setClock(stampEstimate, at: now)
+                } else {
+                    blend(to: stampEstimate, predicted: predicted, now: now)
+                }
+            }
         } else {
-            // Small drift: Spotify's position is noisy, so follow the median of the last few polls
-            // and blend the correction in instead of jumping (a jump back re-lights sung words).
-            recentDrift.append(drift)
-            if recentDrift.count > 3 { recentDrift.removeFirst() }
-            let median = recentDrift.sorted()[recentDrift.count / 2]
-            let correction = abs(median) > Self.driftDeadband ? median : 0
-            anchorPosition = predicted
-            anchorTime = now
-            slew = unapplied + correction
-            // At most ±50 % speed while correcting, so the clock never stalls or runs backwards.
-            slewSpan = max(Self.slewDuration, abs(slew) * 2)
-            if correction != 0 {
-                recentDrift = recentDrift.map { $0 - correction }
+            // Spotify's position can only be late (a stale or cached answer), never early. So a
+            // report ahead of us means we are behind; one behind us is old news, unless it is far
+            // behind twice in a row (a seek back on another device).
+            let drift = measured - target
+            if drift > Self.resyncThreshold {
+                setClock(measured, at: now)
+            } else if drift > Self.catchUpThreshold {
+                blend(to: measured, predicted: predicted, now: now)
+                behindStreak = 0
+            } else if drift < -Self.seekBackThreshold {
+                behindStreak += 1
+                if behindStreak >= 2 { setClock(measured, at: now) }
+            } else {
+                behindStreak = 0
             }
         }
 
@@ -182,6 +232,8 @@ final class PlayerModel {
 
     func startPolling() {
         guard pollTask == nil else { return }
+        // Coming back from the background: the song may have changed meanwhile.
+        if content != nil { isResyncing = true }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -203,6 +255,7 @@ final class PlayerModel {
         do {
             apply(try await api.playbackState())
             accessProblem = nil
+            isResyncing = false
             return nextPollInterval()
         } catch SpotifyAPIError.rateLimited(let retryAfter) {
             backoffUntil = now + retryAfter
@@ -223,7 +276,9 @@ final class PlayerModel {
             return 1
         } catch {
             statusMessage = error.localizedDescription
-            return 4
+            // Right after returning to the app the first request often hits a stale connection:
+            // retry quickly instead of showing the old track for seconds.
+            return isResyncing ? 0.6 : 4
         }
     }
 
@@ -252,7 +307,6 @@ final class PlayerModel {
         }, optimistic: { [weak self] in
             guard let self else { return }
             self.setClock(self.rawPosition(at: CACurrentMediaTime()))
-            self.stall = nil
             self.isPlaying = !wasPlaying
         })
     }
@@ -353,6 +407,10 @@ final class PlayerModel {
 
     func loadLyrics(force: Bool) {
         guard let track else { return }
+        if let temporary = temporaryLyrics[track.id] {
+            show(temporary)
+            return
+        }
         lyricsTask?.cancel()
         lyricsState = .loading
         lyricsTask = Task { [weak self] in
@@ -376,6 +434,53 @@ final class PlayerModel {
 
     func clearLyricsCache() {
         lyrics.clearCache()
+    }
+
+    // MARK: Own TTML
+
+    enum TTMLMode: String, CaseIterable {
+        /// Saved in the library: used for this track from now on.
+        case library
+        /// Only until the app quits (the extension's "Just once").
+        case temporary
+    }
+
+    enum TTMLError: LocalizedError {
+        case noTrack
+        var errorDescription: String? { "Сейчас не играет трек Spotify, к которому можно привязать текст." }
+    }
+
+    var hasTemporaryLyrics: Bool { track.map { temporaryLyrics[$0.id] != nil } ?? false }
+
+    /// Parses a TTML and shows it for the current track, saving it to the library if asked.
+    func applyTTML(_ text: String, mode: TTMLMode) throws {
+        guard let track else { throw TTMLError.noTrack }
+        let document: LyricsDocument
+        switch mode {
+        case .library:
+            document = try localLyrics.save(text, for: track)
+            temporaryLyrics[track.id] = nil
+        case .temporary:
+            document = try TTMLParser.parse(text, sourceName: "Local TTML (temporary)")
+            temporaryLyrics[track.id] = document
+        }
+        show(document)
+    }
+
+    /// Removes a track's own lyrics (saved and temporary) and reloads if it is playing.
+    func removeOwnLyrics(trackID: String) {
+        localLyrics.remove(trackID)
+        temporaryLyrics[trackID] = nil
+        if track?.id == trackID { loadLyrics(force: false) }
+    }
+
+    private func show(_ document: LyricsDocument) {
+        lyricsTask?.cancel()
+        lyricsTask = nil
+        rawLyrics = document
+        preparedRomanized = settings.showRomanization
+        lyricsRevision += 1
+        lyricsState = .loaded(PreparedLyrics(document: document, romanized: settings.showRomanization))
     }
 
     /// Re-prepares the current lyrics after a display setting changed.

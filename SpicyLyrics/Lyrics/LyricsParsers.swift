@@ -56,8 +56,10 @@ enum SpicyLyricsParser {
             if JSONLoose.string(item["Type"])?.lowercased() == "interlude" { continue }
             guard let lead = item["Lead"] as? [String: Any] else { continue }
             let leadSyllables = parseSyllables(lead["Syllables"]).filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
-            let background = JSONLoose.objects(item["Background"]).flatMap { parseSyllables($0["Syllables"]) }
-                .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            let backgroundGroups = JSONLoose.objects(item["Background"])
+                .map { parseSyllables($0["Syllables"]).filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty } }
+                .filter { !$0.isEmpty }
+            let background = backgroundGroups.flatMap { $0 }
             if leadSyllables.isEmpty && background.isEmpty { continue }
 
             let all = leadSyllables + background
@@ -74,7 +76,8 @@ enum SpicyLyricsParser {
                 text: leadSyllables.map(\.text).joined(separator: " "),
                 romanizedText: nil,
                 lead: leadSyllables,
-                background: background
+                background: background,
+                backgroundGroups: backgroundGroups
             ))
         }
         return lines.sorted { $0.start < $1.start }

@@ -18,9 +18,12 @@ final class LyricsService {
     private static let spicyHost = URL(string: "https://api.spicylyrics.org")!
     private static let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 
-    init(settings: AppSettings, auth: SpotifyAuth) {
+    private let local: LocalLyricsStore
+
+    init(settings: AppSettings, auth: SpotifyAuth, local: LocalLyricsStore) {
         self.settings = settings
         self.auth = auth
+        self.local = local
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -28,6 +31,8 @@ final class LyricsService {
     }
 
     func lyrics(for track: TrackInfo, ignoreCache: Bool = false) async -> LyricsLookupResult {
+        // The user's own TTML wins over every online source (the extension's Local DB).
+        if let document = local.document(for: track.id) { return .found(document) }
         if !ignoreCache {
             if let hit = memory[track.id] { return .found(hit) }
             switch cache.read(track.id) {
@@ -261,7 +266,7 @@ struct LyricsDiskCache {
 
     private let directory: URL = {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let url = base.appendingPathComponent("lyrics-v2", isDirectory: true)
+        let url = base.appendingPathComponent("lyrics-v3", isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }()

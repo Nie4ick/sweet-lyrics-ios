@@ -27,8 +27,16 @@ struct LyricLine: Codable, Hashable {
     var romanizedText: String?
     /// Word-timed lead vocal (only for `syllable` documents).
     var lead: [LyricSyllable]
-    /// Word-timed background vocals, drawn smaller under the lead.
+    /// Word-timed background vocals, all groups flattened (kept for lyrics cached before
+    /// `backgroundGroups` existed).
     var background: [LyricSyllable]
+    /// Each background group on its own: the extension gives every one its own `bg-line`, so a
+    /// line can have two background vocals one after the other.
+    var backgroundGroups: [[LyricSyllable]]? = nil
+
+    var backgroundVocals: [[LyricSyllable]] {
+        backgroundGroups ?? (background.isEmpty ? [] : [background])
+    }
 }
 
 /// A person credited for a sync (Spicy Lyrics' `UploadAttribution` / `TTMLUploadMetadata`).
@@ -102,10 +110,26 @@ struct PreparedLine: Identifiable, Hashable {
     var end: Double
     var oppositeAligned: Bool
     var kind: PreparedLineKind
+    /// A background vocal (`.line.bg-line`): its own row under its lead line, smaller and dimmer.
+    var isBackground = false
+    /// For background rows: the lead line they belong to (focus never stops on a background row).
+    var leadID: Int?
 
     var isInterlude: Bool {
         if case .interlude = kind { return true }
         return false
+    }
+
+    /// The line as plain text (copy / share).
+    var plainText: String {
+        switch kind {
+        case .syllable(let lead, let background):
+            return (lead + background).map { $0.syllables.map(\.text).joined() }.joined(separator: " ")
+        case .line(let text), .static(let text):
+            return text
+        case .interlude:
+            return ""
+        }
     }
 }
 
@@ -153,9 +177,23 @@ struct PreparedLyrics: Hashable {
             for (index, line) in source.enumerated() {
                 latestEnd = max(latestEnd, line.end)
                 if document.kind == .syllable {
+                    // The lead and each background group become rows of their own, timed by their
+                    // own syllables (`Applyer/Synced/Syllable.ts`).
+                    var leadID: Int?
                     let lead = Self.words(from: line.lead, romanized: romanized)
-                    let background = Self.words(from: line.background, romanized: romanized)
-                    append(line.start, line.end, line.oppositeAligned, .syllable(lead: lead, background: background))
+                    if !lead.isEmpty {
+                        leadID = result.count
+                        append(line.lead.map(\.start).min() ?? line.start, line.lead.map(\.end).max() ?? line.end,
+                               line.oppositeAligned, .syllable(lead: lead, background: []))
+                    }
+                    for group in line.backgroundVocals {
+                        let words = Self.words(from: group, romanized: romanized)
+                        guard !words.isEmpty, let start = group.map(\.start).min(), let end = group.map(\.end).max() else { continue }
+                        result.append(PreparedLine(id: result.count, start: start, end: end,
+                                                   oppositeAligned: line.oppositeAligned,
+                                                   kind: .syllable(lead: words, background: []),
+                                                   isBackground: true, leadID: leadID))
+                    }
                 } else {
                     let text = romanized ? (line.romanizedText ?? line.text) : line.text
                     append(line.start, line.end, line.oppositeAligned, .line(text: text))
