@@ -26,14 +26,19 @@ These features are implemented in the prototype and still need testing and refin
 | Lyrics sources | Spicy Lyrics API with [LRCLIB](https://lrclib.net) as a fallback |
 | Romanization | Supported when returned by the API (`TransliteratedText`) |
 | Seeking | Tap a lyric line to seek to it; requires Spotify Premium |
+| Track picker | Tap the track header (or the list button) to jump ahead in the queue, replay something from your history, or search; swipe the header sideways to skip. Requires Spotify Premium |
 
 ## Spotify Connection
 
 The app connects through the official **Spotify Web API**:
 
 - OAuth sign-in using Authorization Code + PKCE, without a client secret.
-- Requests to `/me/player/currently-playing` once per second while the app is open.
-  Between requests, playback position is estimated locally with smooth drift correction.
+- Requests to `/me/player` once per second while the app is open. Between requests,
+  playback position is estimated locally; small differences are blended in gradually
+  (median of recent polls) so words never jump backwards, and a position that stops moving
+  is treated as paused even if Spotify still reports `is_playing`.
+- Transient connection failures (TLS handshake errors, dropped VPN connections) are retried
+  on a fresh connection.
 - Play/pause, next/previous, and seeking through the Web API; these controls require
   **Spotify Premium**.
 

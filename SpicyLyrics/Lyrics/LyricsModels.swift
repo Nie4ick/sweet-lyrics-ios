@@ -126,7 +126,11 @@ struct PreparedLyrics: Hashable {
             if let first = source.first, first.start >= Self.interludeThreshold {
                 append(0, first.start, first.oppositeAligned, .interlude(dots: Self.dots(from: 0, to: first.start)))
             }
+            // A long line (e.g. a trailing backing vocal) can outlast the lines after it, so a
+            // gap only counts once every line before it has finished.
+            var latestEnd = 0.0
             for (index, line) in source.enumerated() {
+                latestEnd = max(latestEnd, line.end)
                 if document.kind == .syllable {
                     let lead = Self.words(from: line.lead, romanized: romanized)
                     let background = Self.words(from: line.background, romanized: romanized)
@@ -137,9 +141,9 @@ struct PreparedLyrics: Hashable {
                 }
                 if index + 1 < source.count {
                     let next = source[index + 1]
-                    if next.start - line.end >= Self.interludeThreshold {
-                        append(line.end, next.start, next.oppositeAligned,
-                               .interlude(dots: Self.dots(from: line.end, to: next.start)))
+                    if next.start - latestEnd >= Self.interludeThreshold {
+                        append(latestEnd, next.start, next.oppositeAligned,
+                               .interlude(dots: Self.dots(from: latestEnd, to: next.start)))
                     }
                 }
             }
@@ -158,12 +162,18 @@ struct PreparedLyrics: Hashable {
     private static func words(from syllables: [LyricSyllable], romanized: Bool) -> [PreparedWord] {
         var words: [PreparedWord] = []
         var current: [PreparedSyllable] = []
+        // Syllables are drawn left to right, so they must also light up left to right. Some
+        // sources time a word slightly before the one in front of it; start it with that one
+        // instead of lighting the line out of order.
+        var earliestStart = -Double.infinity
         for syllable in syllables {
             let raw = romanized ? (syllable.romanized ?? syllable.text) : syllable.text
             let text = raw.replacingOccurrences(of: "\u{200B}", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty {
-                current.append(prepare(text: text, start: syllable.start, end: syllable.end))
+                let start = max(syllable.start, earliestStart)
+                earliestStart = start
+                current.append(prepare(text: text, start: start, end: max(syllable.end, start)))
             }
             if !syllable.joinsNext, !current.isEmpty {
                 words.append(PreparedWord(syllables: current))

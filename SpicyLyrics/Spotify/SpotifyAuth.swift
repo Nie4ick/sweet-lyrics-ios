@@ -40,6 +40,7 @@ final class SpotifyAuth: NSObject, ObservableObject {
         "user-read-currently-playing",
         "user-read-playback-state",
         "user-modify-playback-state",
+        "user-read-recently-played",
     ]
 
     @Published private(set) var isLoggedIn = false
@@ -107,6 +108,13 @@ final class SpotifyAuth: NSObject, ObservableObject {
         tokens = nil
         Keychain.delete(Self.keychainKey)
         isLoggedIn = false
+    }
+
+    /// Whether the current login granted `scope`. Logins made before a scope was added lack it
+    /// until the user signs in again. Unknown (no scope string stored) counts as granted.
+    func hasScope(_ scope: String) -> Bool {
+        guard let granted = tokens?.scope else { return true }
+        return granted.split(separator: " ").contains { $0 == scope }
     }
 
     // MARK: Tokens

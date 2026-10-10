@@ -7,7 +7,9 @@ struct NowPlayingView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var auth: SpotifyAuth
     @State private var showSettings = false
+    @State private var showPicker = false
     @State private var showControls = true
+    @State private var headerSwipe: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -39,6 +41,13 @@ struct NowPlayingView: View {
                 .environment(player)
                 .environmentObject(auth)
         }
+        .sheet(isPresented: $showPicker) {
+            TrackPickerView()
+                .environment(player)
+                .environmentObject(auth)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .onChange(of: settings.showRomanization) { _, _ in player.settingsChanged() }
         .alert("Spotify", isPresented: Binding(
             get: { player.transientError != nil },
@@ -53,6 +62,34 @@ struct NowPlayingView: View {
     // MARK: Header
 
     private var header: some View {
+        HStack(spacing: 12) {
+            trackInfo
+            Spacer(minLength: 8)
+
+            Button {
+                showPicker = true
+            } label: {
+                Image(systemName: "music.note.list")
+                    .font(.title2)
+            }
+            Button {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.9)) { showControls.toggle() }
+            } label: {
+                Image(systemName: showControls ? "chevron.down.circle" : "chevron.up.circle")
+                    .font(.title2)
+            }
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.title2)
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    /// Artwork and title. Tap to pick a track, swipe sideways to skip.
+    private var trackInfo: some View {
         HStack(spacing: 12) {
             Group {
                 if let artwork = player.artwork {
@@ -76,22 +113,28 @@ struct NowPlayingView: View {
                     .foregroundStyle(.white.opacity(0.7))
                     .lineLimit(1)
             }
-            Spacer(minLength: 8)
-
-            Button {
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.9)) { showControls.toggle() }
-            } label: {
-                Image(systemName: showControls ? "chevron.down.circle" : "chevron.up.circle")
-                    .font(.title2)
-            }
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.title2)
-            }
         }
-        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .offset(x: headerSwipe)
+        .opacity(1 - min(abs(headerSwipe) / 160, 0.6))
+        .onTapGesture { showPicker = true }
+        .gesture(
+            DragGesture(minimumDistance: 20)
+                .onChanged { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    headerSwipe = value.translation.width * 0.5
+                }
+                .onEnded { value in
+                    let width = value.translation.width
+                    if abs(width) > 70, abs(width) > abs(value.translation.height) {
+                        if width < 0 { player.next() } else { player.previous() }
+                    }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { headerSwipe = 0 }
+                }
+        )
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Выбрать трек. Смахните влево или вправо, чтобы переключить трек.")
     }
 
     private var title: String {

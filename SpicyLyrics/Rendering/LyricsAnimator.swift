@@ -247,6 +247,9 @@ final class LyricsAnimator {
         }
     }
 
+    /// Lines starting this close together are sung together (a duet); the first one keeps focus.
+    private static let duetWindow: Double = 0.6
+
     /// The last line that has started (so the view stays on a line through short gaps).
     private static func focus(in lines: [PreparedLine], at time: Double) -> Int {
         var low = 0, high = lines.count - 1, found = 0
@@ -259,10 +262,16 @@ final class LyricsAnimator {
                 high = mid - 1
             }
         }
-        // Prefer the first of several overlapping active lines (duets).
+        // Prefer the first of several lines that start together (duets). Only lines that start
+        // together count: a long earlier line that merely overlaps (a trailing backing vocal, a
+        // word timed a bit early) must not hold focus while the next line is being sung.
         var index = found
-        while index > 0, ElementState(time, lines[index - 1].start, lines[index - 1].end) == .active,
-              !lines[index - 1].isInterlude {
+        while index > 0 {
+            let previous = lines[index - 1]
+            guard !previous.isInterlude,
+                  lines[index].start - previous.start <= duetWindow,
+                  ElementState(time, previous.start, previous.end) == .active
+            else { break }
             index -= 1
         }
         return index

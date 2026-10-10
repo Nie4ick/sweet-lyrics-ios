@@ -26,6 +26,9 @@ final class PlayerModel {
     private(set) var lyricsRevision = 0
     private(set) var lyricsState: LyricsState = .idle
     private(set) var statusMessage: String?
+    /// Album / playlist Spotify is playing from, used to keep context when picking a track.
+    private(set) var contextURI: String?
+    private(set) var deviceName: String?
     var transientError: String?
 
     var track: TrackInfo? {
@@ -43,11 +46,27 @@ final class PlayerModel {
     @ObservationIgnored private var preparedRomanized = false
     @ObservationIgnored private var lastArtworkURL: URL?
 
-    // Clock anchor: position `anchorPosition` was correct at `anchorTime`.
+    // Clock anchor: position `anchorPosition` was correct at `anchorTime`. `slew` is a small
+    // correction blended in over `slewDuration`, so the clock never visibly jumps or runs backwards.
     @ObservationIgnored private var anchorPosition: Double = 0
     @ObservationIgnored private var anchorTime: CFTimeInterval = CACurrentMediaTime()
+    @ObservationIgnored private var slew: Double = 0
+    @ObservationIgnored private var slewSpan: Double = 0.8
+    /// Recent differences between Spotify's reported position and our clock, newest last.
+    @ObservationIgnored private var recentDrift: [Double] = []
+    /// First poll of a run in which Spotify claimed to play but the position did not move.
+    @ObservationIgnored private var stall: (progress: Double, at: CFTimeInterval)?
     @ObservationIgnored private var holdUntil: CFTimeInterval = 0
     @ObservationIgnored private var backoffUntil: CFTimeInterval = 0
+
+    private static let slewDuration: Double = 0.8
+    /// Larger differences are treated as a seek and applied at once.
+    private static let resyncThreshold: Double = 1.0
+    /// Corrections smaller than this are noise in Spotify's reported position.
+    private static let driftDeadband: Double = 0.04
+    /// Spotify sometimes keeps reporting `is_playing` after a pause; a position frozen this long
+    /// means it is paused.
+    private static let stallTimeout: Double = 1.8
 
     init(api: SpotifyAPI, lyrics: LyricsService, settings: AppSettings) {
         self.api = api
@@ -69,37 +88,80 @@ final class PlayerModel {
     }
 
     private func rawPosition(at now: CFTimeInterval) -> Double {
-        isPlaying ? anchorPosition + (now - anchorTime) : anchorPosition
+        guard isPlaying else { return anchorPosition }
+        let elapsed = max(0, now - anchorTime)
+        return anchorPosition + elapsed + slew * min(1, elapsed / slewSpan)
+    }
+
+    /// Re-anchors the clock at `position` right now, dropping any pending correction.
+    private func setClock(_ position: Double, at now: CFTimeInterval = CACurrentMediaTime()) {
+        anchorPosition = position
+        anchorTime = now
+        slew = 0
+        recentDrift.removeAll()
+    }
+
+    /// Spotify can report `is_playing` for a while after playback was paused (from the Spotify
+    /// app, headphones or the lock screen). If the position stops moving, believe the position.
+    private func detectStall(_ snapshot: PlaybackSnapshot, trackChanged: Bool) -> Bool {
+        guard snapshot.isPlaying, !trackChanged else {
+            stall = nil
+            return false
+        }
+        if let stall, abs(snapshot.progress - stall.progress) < 0.25 {
+            return snapshot.measuredAt - stall.at >= Self.stallTimeout
+        }
+        stall = (snapshot.progress, snapshot.measuredAt)
+        return false
     }
 
     private func apply(_ snapshot: PlaybackSnapshot?) {
-        guard let snapshot else {
+        guard var snapshot else {
             // No active device. Keep the last track on screen, just stop the clock.
             if isPlaying {
-                anchorPosition = rawPosition(at: CACurrentMediaTime())
+                setClock(rawPosition(at: CACurrentMediaTime()))
                 isPlaying = false
             }
+            stall = nil
             statusMessage = "Сейчас ничего не играет в Spotify"
             return
         }
         statusMessage = nil
+        contextURI = snapshot.contextURI
+        deviceName = snapshot.deviceName
 
         let now = CACurrentMediaTime()
         let trackChanged = content != snapshot.content
+        if detectStall(snapshot, trackChanged: trackChanged) {
+            snapshot.isPlaying = false
+        }
         // Right after a control action, polls may still describe the old state.
         if now < holdUntil && !trackChanged { return }
 
         let measured = snapshot.progress + (snapshot.isPlaying ? now - snapshot.measuredAt : 0)
         let stateChanged = isPlaying != snapshot.isPlaying
         let predicted = rawPosition(at: now)
-        let drift = measured - predicted
-        if trackChanged || stateChanged || abs(drift) > 0.35 {
-            anchorPosition = measured
+        // Part of the previous correction not blended in yet: the clock is already heading there.
+        let unapplied = isPlaying ? slew * (1 - min(1, max(0, now - anchorTime) / slewSpan)) : 0
+        let drift = measured - (predicted + unapplied)
+        if trackChanged || stateChanged || !snapshot.isPlaying || abs(drift) > Self.resyncThreshold {
+            setClock(measured, at: now)
         } else {
-            // Small drift: nudge instead of jumping, so words don't stutter.
-            anchorPosition = predicted + drift * 0.35
+            // Small drift: Spotify's position is noisy, so follow the median of the last few polls
+            // and blend the correction in instead of jumping (a jump back re-lights sung words).
+            recentDrift.append(drift)
+            if recentDrift.count > 3 { recentDrift.removeFirst() }
+            let median = recentDrift.sorted()[recentDrift.count / 2]
+            let correction = abs(median) > Self.driftDeadband ? median : 0
+            anchorPosition = predicted
+            anchorTime = now
+            slew = unapplied + correction
+            // At most ±50 % speed while correcting, so the clock never stalls or runs backwards.
+            slewSpan = max(Self.slewDuration, abs(slew) * 2)
+            if correction != 0 {
+                recentDrift = recentDrift.map { $0 - correction }
+            }
         }
-        anchorTime = now
 
         if stateChanged { isPlaying = snapshot.isPlaying }
         if trackChanged {
@@ -131,8 +193,8 @@ final class PlayerModel {
         let now = CACurrentMediaTime()
         if now < backoffUntil { return backoffUntil - now }
         do {
-            apply(try await api.currentlyPlaying())
-            return isPlaying ? 1.0 : 2.5
+            apply(try await api.playbackState())
+            return isPlaying ? 1.0 : 1.5
         } catch SpotifyAPIError.rateLimited(let retryAfter) {
             backoffUntil = now + retryAfter
             return retryAfter
@@ -159,9 +221,8 @@ final class PlayerModel {
             if wasPlaying { try await api.pause() } else { try await api.play() }
         }, optimistic: { [weak self] in
             guard let self else { return }
-            let now = CACurrentMediaTime()
-            self.anchorPosition = self.rawPosition(at: now)
-            self.anchorTime = now
+            self.setClock(self.rawPosition(at: CACurrentMediaTime()))
+            self.stall = nil
             self.isPlaying = !wasPlaying
         })
     }
@@ -171,9 +232,56 @@ final class PlayerModel {
 
     func seek(to seconds: Double) {
         control({ [api] in try await api.seek(to: seconds) }, optimistic: { [weak self] in
-            self?.anchorPosition = seconds
-            self?.anchorTime = CACurrentMediaTime()
+            self?.setClock(seconds)
         })
+    }
+
+    /// Jumps to an upcoming track by skipping everything queued before it.
+    func skipAhead(_ count: Int) {
+        guard count > 0 else { return }
+        control({ [api] in
+            for index in 0..<count {
+                if index > 0 { try await Task.sleep(for: .milliseconds(150)) }
+                try await api.next()
+            }
+        })
+    }
+
+    /// Plays `track`, continuing with the album or playlist it came from when there is one.
+    func play(_ track: TrackSummary, context: String?) {
+        let contexts = [context, track.albumURI].compactMap { $0 }.filter(Self.supportsOffset)
+        control({ [api] in
+            for contextURI in contexts {
+                do {
+                    try await api.play(trackURI: track.uri, inContext: contextURI)
+                    return
+                } catch SpotifyAPIError.http(let status, _) where status == 400 || status == 404 {
+                    continue // The track isn't part of that context (or it is gone); try the next.
+                }
+            }
+            try await api.play(uris: [track.uri])
+        })
+    }
+
+    func addToQueue(_ track: TrackSummary) {
+        Task {
+            do {
+                try await api.addToQueue(track.uri)
+            } catch {
+                transientError = error.localizedDescription
+            }
+        }
+    }
+
+    func upcomingTracks() async throws -> [TrackSummary] { try await api.queue() }
+    func recentTracks() async throws -> [TrackSummary] { try await api.recentlyPlayed() }
+    func searchTracks(_ query: String, offset: Int) async throws -> [TrackSummary] {
+        try await api.search(query, offset: offset)
+    }
+
+    /// Only albums and playlists accept a starting track (`offset`).
+    private static func supportsOffset(_ uri: String) -> Bool {
+        uri.hasPrefix("spotify:album:") || uri.hasPrefix("spotify:playlist:")
     }
 
     private func control(_ action: @escaping () async throws -> Void, optimistic: (() -> Void)? = nil) {
