@@ -10,6 +10,7 @@ struct NowPlayingView: View {
     @Environment(PerformanceMonitor.self) private var performance
     @State private var showSettings = false
     @State private var showPicker = false
+    @State private var showSetupGuide = false
     @State private var chromeVisible = true
     /// Bumped on every touch; restarts the auto-hide countdown.
     @State private var interactionTick = 0
@@ -55,6 +56,18 @@ struct NowPlayingView: View {
                 .environment(player)
                 .environmentObject(auth)
         }
+        .sheet(isPresented: $showSetupGuide) {
+            NavigationStack {
+                SpotifySetupGuideView()
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Закрыть") { showSetupGuide = false }
+                        }
+                    }
+            }
+            .environment(settings)
+            .environmentObject(auth)
+        }
         .sheet(isPresented: $showPicker) {
             TrackPickerView()
                 .environment(player)
@@ -90,7 +103,7 @@ struct NowPlayingView: View {
 
     private var canAutoHide: Bool {
         settings.autoHideControls && chromeVisible && player.isPlaying && lyricsLoaded
-            && !showSettings && !showPicker
+            && !showSettings && !showPicker && !showSetupGuide
     }
 
     private func showChrome() {
@@ -376,14 +389,27 @@ struct NowPlayingView: View {
             Text(player.statusMessage ?? "Включите музыку в Spotify")
                 .font(.title3.weight(.semibold))
                 .multilineTextAlignment(.center)
-            Button {
-                if let url = URL(string: "spotify:") { UIApplication.shared.open(url) }
-            } label: {
-                Label("Открыть Spotify", systemImage: "arrow.up.forward.app")
-                    .font(.headline)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(.white.opacity(0.15), in: Capsule())
+            if player.accessProblem != nil {
+                Button {
+                    showSetupGuide = true
+                } label: {
+                    Label("Подключить свой Client ID", systemImage: "key.horizontal")
+                        .font(.headline)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(Color(red: 0.12, green: 0.84, blue: 0.38), in: Capsule())
+                        .foregroundStyle(.black)
+                }
+            } else {
+                Button {
+                    if let url = URL(string: "spotify:") { UIApplication.shared.open(url) }
+                } label: {
+                    Label("Открыть Spotify", systemImage: "arrow.up.forward.app")
+                        .font(.headline)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .background(.white.opacity(0.15), in: Capsule())
+                }
             }
         }
         .foregroundStyle(.white)

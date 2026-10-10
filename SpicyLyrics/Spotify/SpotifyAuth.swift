@@ -8,6 +8,8 @@ struct SpotifyTokens: Codable {
     var refreshToken: String?
     var expiresAt: Date
     var scope: String?
+    /// The Client ID these tokens belong to; they stop working once the app uses another one.
+    var clientID: String?
 
     var isFresh: Bool { expiresAt.timeIntervalSinceNow > 60 }
 }
@@ -121,6 +123,11 @@ final class SpotifyAuth: NSObject, ObservableObject {
 
     /// A usable access token, refreshing it first when it is about to expire.
     func accessToken(forceRefresh: Bool = false) async throws -> String {
+        if let issuedTo = tokens?.clientID, issuedTo != settings.effectiveSpotifyClientID {
+            // The Client ID changed in settings: this session belongs to the old one.
+            logOut()
+            throw SpotifyAuthError.notLoggedIn
+        }
         if !forceRefresh, let tokens, tokens.isFresh { return tokens.accessToken }
         if let refreshTask { return try await refreshTask.value.accessToken }
 
@@ -183,7 +190,8 @@ final class SpotifyAuth: NSObject, ObservableObject {
             // Spotify may omit a new refresh token on refresh; keep the old one then.
             refreshToken: payload.refresh_token ?? previousRefresh,
             expiresAt: Date().addingTimeInterval(payload.expires_in),
-            scope: payload.scope
+            scope: payload.scope,
+            clientID: form["client_id"]
         )
     }
 

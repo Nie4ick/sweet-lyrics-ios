@@ -1,14 +1,17 @@
 import SwiftUI
 
-/// First run: explains the one-time Spotify developer app setup and signs in.
+/// First run: sign in with the built-in Client ID, or set up one's own (step-by-step guide).
 struct OnboardingView: View {
     @EnvironmentObject private var auth: SpotifyAuth
     @Environment(AppSettings.self) private var settings
     @State private var error: String?
     @State private var busy = false
 
+    private var canLogIn: Bool {
+        settings.usingBundledClientID || AppSettings.isValidClientID(settings.spotifyClientID)
+    }
+
     var body: some View {
-        @Bindable var settings = settings
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
@@ -20,65 +23,36 @@ struct OnboardingView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    // A Client ID built into the app skips the developer-app setup.
-                    if !settings.hasBundledSpotifyClientID {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Подключение Spotify (один раз)")
-                                .font(.headline)
-                            step(1, "Откройте developer.spotify.com/dashboard и создайте приложение (Create app).")
-                            step(2, "В поле Redirect URI добавьте:")
-                            HStack {
-                                Text(SpotifyAuth.redirectURI)
-                                    .font(.callout.monospaced())
-                                    .textSelection(.enabled)
-                                Spacer()
-                                Button {
-                                    UIPasteboard.general.string = SpotifyAuth.redirectURI
-                                } label: {
-                                    Image(systemName: "doc.on.doc")
-                                }
-                            }
-                            .padding(12)
-                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                            step(3, "Отметьте Web API, сохраните. В User Management добавьте свой e-mail Spotify.")
-                            step(4, "Скопируйте Client ID и вставьте ниже.")
-                            Link("Открыть Spotify Dashboard", destination: URL(string: "https://developer.spotify.com/dashboard")!)
-                                .font(.callout.weight(.semibold))
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Client ID")
-                                .font(.headline)
-                            TextField("например 3f2a…", text: $settings.spotifyClientID)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .font(.body.monospaced())
-                                .padding(12)
-                                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-                        }
-
-                    }
-
                     if let error {
                         Text(error)
                             .font(.callout)
                             .foregroundStyle(.red)
                     }
 
-                    Button {
-                        Task { await logIn() }
-                    } label: {
-                        HStack {
-                            if busy { ProgressView().tint(.black) }
-                            Text("Войти через Spotify")
-                                .font(.headline)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color(red: 0.12, green: 0.84, blue: 0.38), in: Capsule())
-                        .foregroundStyle(.black)
+                    if canLogIn {
+                        loginButton
                     }
-                    .disabled(busy || settings.effectiveSpotifyClientID.isEmpty)
+
+                    accessExplanation
+
+                    NavigationLink {
+                        SpotifySetupGuideView()
+                    } label: {
+                        Label(canLogIn ? "Подключить свой Client ID" : "Настроить доступ к Spotify (5 минут)",
+                              systemImage: "key.horizontal")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(.white.opacity(canLogIn ? 0.12 : 0.9), in: Capsule())
+                            .foregroundStyle(canLogIn ? .white : .black)
+                    }
+
+                    if settings.bundledSpotifyClientID != nil, settings.useOwnClientID {
+                        Button("Вернуться к встроенному доступу") {
+                            settings.useOwnClientID = false
+                        }
+                        .font(.callout.weight(.semibold))
+                    }
 
                     Text("Приложение не связано со Spotify AB и с авторами Spicy Lyrics. Это неофициальный порт расширения Spicy Lyrics под AGPL-3.0.")
                         .font(.footnote)
@@ -94,15 +68,37 @@ struct OnboardingView: View {
         }
     }
 
-    private func step(_ number: Int, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("\(number)")
-                .font(.callout.weight(.bold))
-                .frame(width: 24, height: 24)
-                .background(.white.opacity(0.15), in: Circle())
-            Text(text)
+    private var loginButton: some View {
+        Button {
+            Task { await logIn() }
+        } label: {
+            HStack {
+                if busy { ProgressView().tint(.black) }
+                Text("Войти через Spotify")
+                    .font(.headline)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color(red: 0.12, green: 0.84, blue: 0.38), in: Capsule())
+            .foregroundStyle(.black)
+        }
+        .disabled(busy)
+    }
+
+    @ViewBuilder
+    private var accessExplanation: some View {
+        if settings.usingBundledClientID {
+            Text("Встроенный доступ Spotify рассчитан только на 5 человек. Если после входа появится ошибка доступа, подключите свой Client ID: это бесплатно, нужен Spotify Premium.")
                 .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(.white.opacity(0.7))
+        } else if canLogIn {
+            Text("Используется ваш Client ID …\(String(settings.spotifyClientID.suffix(4))).")
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.7))
+        } else {
+            Text("Чтобы приложение видело, что играет в Spotify, нужен свой Client ID из бесплатного кабинета разработчика Spotify. Пошаговая инструкция — по кнопке ниже.")
+                .font(.callout)
+                .foregroundStyle(.white.opacity(0.7))
         }
     }
 

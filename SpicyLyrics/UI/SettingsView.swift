@@ -81,11 +81,22 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    if !settings.hasBundledSpotifyClientID {
-                        TextField("Client ID", text: $settings.spotifyClientID)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.body.monospaced())
+                    LabeledContent("Доступ", value: settings.usingBundledClientID
+                                   ? "Встроенный"
+                                   : "Свой Client ID …\(String(settings.spotifyClientID.suffix(4)))")
+                    NavigationLink {
+                        SpotifySetupGuideView()
+                    } label: {
+                        Label(settings.usingBundledClientID ? "Подключить свой Client ID" : "Сменить Client ID",
+                              systemImage: "key.horizontal")
+                    }
+                    if settings.bundledSpotifyClientID != nil, settings.useOwnClientID {
+                        Button("Вернуться к встроенному доступу") {
+                            // The session belongs to the user's own Client ID: sign in again.
+                            settings.useOwnClientID = false
+                            auth.logOut()
+                            dismiss()
+                        }
                     }
                     Button("Выйти из Spotify", role: .destructive) {
                         auth.logOut()
@@ -94,7 +105,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Spotify")
                 } footer: {
-                    Text("Redirect URI: \(SpotifyAuth.redirectURI)")
+                    Text("Встроенный доступ Spotify — максимум на 5 человек. Со своим Client ID ограничение снимается (нужен Spotify Premium).")
                 }
 
                 Section {
