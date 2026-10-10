@@ -68,7 +68,7 @@ final class AppSettings {
             Keys.gestures: true,
             Keys.outputLatency: true,
             Keys.simpleMode: false,
-            Keys.autoPiP: true,
+            Keys.autoPiP: false,
             Keys.translate: false,
             Keys.translationLanguage: Locale.current.language.languageCode?.identifier ?? "en",
             Keys.centerLyrics: false,
