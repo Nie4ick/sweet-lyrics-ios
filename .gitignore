@@ -17,3 +17,6 @@ _ref/
 
 # Build-time keys (see Config/Secrets.example.xcconfig)
 Config/Secrets.xcconfig
+SpicyLyrics/Generated/
+*.log
+build-check/

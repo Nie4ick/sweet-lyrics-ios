@@ -47,19 +47,22 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField(settings.hasBundledSpicyKey ? "Встроенный ключ (можно заменить)" : "sl_pk_…",
-                              text: $settings.spicyLyricsKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
-                    if !settings.spicyLyricsKey.isEmpty && settings.validSpicyKey == nil {
-                        Text(settings.spicyLyricsKey.hasPrefix("sl_sk_")
-                             ? "Это секретный ключ. Нужен клиентский ключ sl_pk_…"
-                             : "Ключ должен начинаться с sl_pk_")
-                            .font(.footnote)
-                            .foregroundStyle(.red)
+                    if settings.hasBundledSpicyKey {
+                        Label("Ключ Spicy Lyrics встроен в приложение", systemImage: "checkmark.seal.fill")
+                    } else {
+                        TextField("sl_pk_…", text: $settings.spicyLyricsKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                        if !settings.spicyLyricsKey.isEmpty && settings.validSpicyKey == nil {
+                            Text(settings.spicyLyricsKey.hasPrefix("sl_sk_")
+                                 ? "Это секретный ключ. Нужен клиентский ключ sl_pk_…"
+                                 : "Ключ должен начинаться с sl_pk_")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                        Link("Получить ключ Spicy Lyrics", destination: URL(string: "https://developers.spicylyrics.org")!)
                     }
-                    Link("Получить ключ Spicy Lyrics", destination: URL(string: "https://developers.spicylyrics.org")!)
                     Toggle("Запасной источник LRCLIB", isOn: $settings.useLRCLibFallback)
                     Button("Перезагрузить текст") {
                         player.loadLyrics(force: true)
@@ -77,11 +80,12 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    TextField(settings.hasBundledSpotifyClientID ? "Встроенный Client ID (можно заменить)" : "Client ID",
-                              text: $settings.spotifyClientID)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.body.monospaced())
+                    if !settings.hasBundledSpotifyClientID {
+                        TextField("Client ID", text: $settings.spotifyClientID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.body.monospaced())
+                    }
                     Button("Выйти из Spotify", role: .destructive) {
                         auth.logOut()
                         dismiss()

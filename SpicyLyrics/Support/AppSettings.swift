@@ -24,8 +24,9 @@ final class AppSettings {
     var landscapeTitle: Bool { didSet { defaults.set(landscapeTitle, forKey: Keys.landscapeTitle) } }
 
     /// Keys baked in at build time from `Config/Secrets.xcconfig` or CI secrets (may be empty).
-    let bundledSpotifyClientID = AppSettings.bundled("SpicyBundledSpotifyClientID")
-    let bundledSpicyLyricsKey = AppSettings.bundled("SpicyBundledLyricsKey")
+    /// When present they are fixed: the app ignores anything typed in settings.
+    let bundledSpotifyClientID = BundledKeys.spotifyClientID
+    let bundledSpicyLyricsKey = BundledKeys.spicyLyricsKey.flatMap(AppSettings.clientKey)
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -55,32 +56,24 @@ final class AppSettings {
         landscapeTitle = defaults.bool(forKey: Keys.landscapeTitle)
     }
 
-    /// The Client ID typed in the app, else the one built into it.
+    /// The Client ID built into the app, else the one typed in settings.
     var effectiveSpotifyClientID: String {
-        spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank ?? bundledSpotifyClientID ?? ""
+        bundledSpotifyClientID ?? spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     var hasBundledSpotifyClientID: Bool { bundledSpotifyClientID != nil }
 
-    /// The Spicy Lyrics client key typed in the app (when it looks like one), else the built-in one.
+    /// The Spicy Lyrics client key built into the app, else the one typed in settings.
     var validSpicyKey: String? {
-        Self.clientKey(spicyLyricsKey) ?? bundledSpicyLyricsKey.flatMap(Self.clientKey)
+        bundledSpicyLyricsKey ?? Self.clientKey(spicyLyricsKey)
     }
 
-    var hasBundledSpicyKey: Bool { bundledSpicyLyricsKey.flatMap(Self.clientKey) != nil }
+    var hasBundledSpicyKey: Bool { bundledSpicyLyricsKey != nil }
 
     private static func clientKey(_ raw: String) -> String? {
         let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.hasPrefix("sl_pk_"), key.count >= 14 else { return nil }
         return key
-    }
-
-    private static func bundled(_ infoKey: String) -> String? {
-        guard let value = Bundle.main.object(forInfoDictionaryKey: infoKey) as? String else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        // An unset build setting can leak through as the literal "$(NAME)".
-        guard !trimmed.isEmpty, !trimmed.hasPrefix("$(") else { return nil }
-        return trimmed
     }
 
     private enum Keys {
