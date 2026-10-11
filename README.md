@@ -34,11 +34,6 @@ Made by **[sppq](https://spicylyrics.org/sppq)** ([GitHub](https://github.com/Sp
 <p align="center"><sub>Make it yours: font, weight, size, alignment, blur, glow, background · romanization (Cyrillic, Japanese, Korean, Chinese, Greek)</sub></p>
 
 <p align="center">
-  <img src="docs/media/ipad.webp" width="500" alt="iPad: artwork and controls beside the lyrics">
-</p>
-<p align="center"><sub>iPad</sub></p>
-
-<p align="center">
   <img src="docs/media/simple.webp" width="250" alt="Simple Lyrics Mode">
   <img src="docs/media/settings.png" width="250" alt="Settings">
 </p>
