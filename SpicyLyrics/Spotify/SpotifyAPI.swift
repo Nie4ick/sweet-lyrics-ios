@@ -133,18 +133,8 @@ final class SpotifyAPI {
                 artworkURL: payload.item?.images?.first.flatMap { URL(string: $0.url) }
             )
         default:
-            if let item = payload.item, let uri = item.uri {
-                let images = item.album?.images ?? []
-                content = .track(TrackInfo(
-                    id: item.id ?? uri,
-                    uri: uri,
-                    title: item.name ?? "",
-                    artists: item.artists?.map(\.name) ?? [],
-                    album: item.album?.name ?? "",
-                    duration: Double(item.duration_ms ?? 0) / 1000,
-                    artworkURL: (images.first { ($0.width ?? 0) >= 300 } ?? images.first).flatMap { URL(string: $0.url) },
-                    isLocal: item.is_local ?? false
-                ))
+            if let item = payload.item, let info = Self.trackInfo(item) {
+                content = .track(info)
             } else {
                 content = .unknown
             }
@@ -161,6 +151,28 @@ final class SpotifyAPI {
             deviceType: payload.device?.type,
             stateChangedAt: payload.timestamp.map { Double($0) / 1000 }
         )
+    }
+
+    private static func trackInfo(_ item: ItemPayload) -> TrackInfo? {
+        guard let uri = item.uri else { return nil }
+        let images = item.album?.images ?? []
+        return TrackInfo(
+            id: item.id ?? uri,
+            uri: uri,
+            title: item.name ?? "",
+            artists: item.artists?.map(\.name) ?? [],
+            album: item.album?.name ?? "",
+            duration: Double(item.duration_ms ?? 0) / 1000,
+            artworkURL: (images.first { ($0.width ?? 0) >= 300 } ?? images.first).flatMap { URL(string: $0.url) },
+            isLocal: item.is_local ?? false
+        )
+    }
+
+    /// One song's details (cover, names), for a track App Remote announced.
+    func track(id: String) async throws -> TrackInfo? {
+        let (data, status) = try await send("GET", "/tracks/\(id)")
+        try check(status, data)
+        return Self.trackInfo(try JSONDecoder().decode(ItemPayload.self, from: data))
     }
 
     // MARK: Browsing
@@ -258,6 +270,7 @@ final class SpotifyAPI {
         guard !(200..<300).contains(status) else { return }
         let error = (try? JSONDecoder().decode(ErrorPayload.self, from: data))?.error
         let message = error?.message ?? ""
+        SyncLog.log("api", "HTTP \(status) \(error?.reason ?? "") \(message)")
         switch status {
         case 403 where message.lowercased().contains("premium") || error?.reason == "PREMIUM_REQUIRED":
             throw SpotifyAPIError.premiumRequired
