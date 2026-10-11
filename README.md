@@ -13,6 +13,43 @@ Spicetify extension, taking inspiration from the Android app
 Made by **[sppq](https://spicylyrics.org/sppq)** ([GitHub](https://github.com/Sppqq)), tested by
 **[nie4ick](https://spicylyrics.org/nie4ick)**.
 
+## In Action
+
+<p align="center">
+  <img src="docs/media/code.webp" width="250" alt="Word-by-word lyrics over the drifting cover">
+  <img src="docs/media/duets.webp" width="250" alt="A fast duet: the second voice's lines sit on the right">
+  <img src="docs/media/player.webp" width="250" alt="The player with its controls">
+</p>
+<p align="center"><sub>Word by word over the cover · duets, each voice on its own side · an Apple Music style player</sub></p>
+
+<p align="center">
+  <img src="docs/media/landscape.webp" width="770" alt="Landscape: artwork and controls next to the lyrics">
+</p>
+<p align="center"><sub>Landscape</sub></p>
+
+<p align="center">
+  <img src="docs/media/styles.webp" width="250" alt="The same song in three looks: centred and rounded, New York black, small semibold">
+  <img src="docs/media/romanization.webp" width="250" alt="Russian lyrics romanized on the device">
+  <img src="docs/media/pip.webp" width="250" alt="Lyrics in the floating Picture in Picture window">
+</p>
+<p align="center"><sub>Make it yours: font, weight, size, alignment, blur, glow, background · romanization (Cyrillic, Japanese, Korean, Chinese, Greek) · Picture in Picture over other apps*</sub></p>
+
+<p align="center">
+  <img src="docs/media/ipad.webp" width="500" alt="iPad: artwork and controls beside the lyrics">
+</p>
+<p align="center"><sub>iPad</sub></p>
+
+<p align="center">
+  <img src="docs/media/simple.webp" width="250" alt="Simple Lyrics Mode">
+  <img src="docs/media/settings.png" width="250" alt="Settings">
+</p>
+<p align="center"><sub>Simple Lyrics Mode · plenty of settings</sub></p>
+
+<sub>Recorded in the iOS Simulator with the Debug-only demo mode (`SpicyLyrics/Support/DemoMode.swift`).
+Songs: Nemo — The Code, Bao The Whale &amp; Neuro-sama — Mesmerizer, KIDSCRY2DAY — sleep mode. On a phone
+the app follows Spotify instead. \*The Simulator has no Picture in Picture, so the PiP clip shows the
+window's real frames over a stand-in home screen. On-device translation (iOS 18+) works on a phone only.</sub>
+
 ## Ported Features
 
 These features work, but still need testing and refinement.

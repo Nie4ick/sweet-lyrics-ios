@@ -63,7 +63,7 @@ final class PlayerModel {
     // Clock anchor: position `anchorPosition` was correct at `anchorTime`. `slew` is a small
     // correction blended in over `slewDuration`, so the clock never visibly jumps or runs backwards.
     @ObservationIgnored private var anchorPosition: Double = 0
-    @ObservationIgnored private var anchorTime: CFTimeInterval = CACurrentMediaTime()
+    @ObservationIgnored private var anchorTime: CFTimeInterval = MediaClock.now()
     @ObservationIgnored private var slew: Double = 0
     @ObservationIgnored private var slewSpan: Double = 0.8
     /// The previous report, to tell a live position from a frozen one.
@@ -138,7 +138,7 @@ final class PlayerModel {
 
     /// Lyrics clock in seconds at media time `now`: playback position plus the user's offset,
     /// minus the audio output's delay when Spotify plays on this phone (Bluetooth headphones).
-    func position(at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
+    func position(at now: CFTimeInterval = MediaClock.now()) -> Double {
         playbackPosition(at: now) + settings.timingOffsetMs / 1000 - appliedOutputLatency
     }
 
@@ -157,7 +157,7 @@ final class PlayerModel {
     }
 
     /// Spotify's playback position in seconds at media time `now`.
-    func playbackPosition(at now: CFTimeInterval = CACurrentMediaTime()) -> Double {
+    func playbackPosition(at now: CFTimeInterval = MediaClock.now()) -> Double {
         let duration = track?.duration ?? .infinity
         return min(max(0, rawPosition(at: now)), duration)
     }
@@ -169,7 +169,7 @@ final class PlayerModel {
     }
 
     /// Re-anchors the clock at `position` right now, dropping any pending correction.
-    private func setClock(_ position: Double, at now: CFTimeInterval = CACurrentMediaTime()) {
+    private func setClock(_ position: Double, at now: CFTimeInterval = MediaClock.now()) {
         anchorPosition = position
         anchorTime = now
         slew = 0
@@ -194,7 +194,7 @@ final class PlayerModel {
             if remoteAuthority { return }
             // No active device. Keep the last track on screen, just stop the clock.
             if isPlaying {
-                setClock(rawPosition(at: CACurrentMediaTime()))
+                setClock(rawPosition(at: MediaClock.now()))
                 isPlaying = false
             }
             lastSample = nil
@@ -208,7 +208,7 @@ final class PlayerModel {
         playingOnThisPhone = snapshot.deviceType?.lowercased() == "smartphone"
         outputLatency = AudioRoute.outputLatency
 
-        let now = CACurrentMediaTime()
+        let now = MediaClock.now()
         let sameItem = Self.sameItem(content, snapshot.content)
         let trackChanged = !sameItem
         let summary = "\(snapshot.isPlaying ? "playing" : "paused") \(snapshot.progress.s3)s "
@@ -403,7 +403,7 @@ final class PlayerModel {
     /// A reading from the Spotify app on this phone (App Remote): exact to a few milliseconds.
     func applyRemote(_ sample: SpotifyAppRemote.Sample) {
         let log = SyncLog.shared
-        let now = CACurrentMediaTime()
+        let now = MediaClock.now()
         let kind = sample.event ? "event" : "query"
         let summary = "\(kind) \(sample.paused ? "paused" : "playing") \(sample.position.s3)s "
             + "\(sample.uri.split(separator: ":").last.map { String($0.prefix(8)) } ?? "?") \"\(sample.name.prefix(24))\""
@@ -512,6 +512,9 @@ final class PlayerModel {
     // MARK: Polling
 
     func startPolling() {
+        #if DEBUG
+        if DemoTrack.current != nil { return }
+        #endif
         guard pollTask == nil else { return }
         // Coming back from the background: the song may have changed meanwhile.
         if content != nil { isResyncing = true }
@@ -531,12 +534,12 @@ final class PlayerModel {
 
     /// Returns how long to wait before the next poll.
     private func pollOnce() async -> Double {
-        let now = CACurrentMediaTime()
+        let now = MediaClock.now()
         if now < backoffUntil { return backoffUntil - now }
         do {
-            let sentAt = CACurrentMediaTime()
+            let sentAt = MediaClock.now()
             let snapshot = try await api.playbackState()
-            apply(snapshot, roundTrip: CACurrentMediaTime() - sentAt)
+            apply(snapshot, roundTrip: MediaClock.now() - sentAt)
             accessProblem = nil
             isResyncing = false
             return nextPollInterval()
@@ -595,7 +598,7 @@ final class PlayerModel {
             if wasPlaying { try await api.pause() } else { try await api.play() }
         }, optimistic: { [weak self] in
             guard let self else { return }
-            self.setClock(self.rawPosition(at: CACurrentMediaTime()))
+            self.setClock(self.rawPosition(at: MediaClock.now()))
             self.isPlaying = !wasPlaying
         })
     }
@@ -608,6 +611,17 @@ final class PlayerModel {
             self?.setClock(seconds)
         })
     }
+
+    #if DEBUG
+    /// README recordings: the demo song "plays" from its start time on the local clock.
+    func startDemo(_ demo: DemoTrack) {
+        guard track?.id != demo.info.id else { return }
+        content = .track(demo.info)
+        onContentChanged()
+        setClock(demo.start)
+        isPlaying = true
+    }
+    #endif
 
     /// Jumps to an upcoming track by skipping everything queued before it.
     func skipAhead(_ count: Int) {
@@ -661,7 +675,7 @@ final class PlayerModel {
     private func control(_ action: @escaping () async throws -> Void, optimistic: (() -> Void)? = nil) {
         optimistic?()
         // Ignore stale polls for a moment so the optimistic state isn't undone.
-        holdUntil = CACurrentMediaTime() + 1.5
+        holdUntil = MediaClock.now() + 1.5
         Task {
             do {
                 try await action()
@@ -829,10 +843,13 @@ final class PlayerModel {
             for delay in [0.0, 1, 3, 8] {
                 if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
                 guard !Task.isCancelled else { return }
-                if let data = try? await URLSession.shared.data(from: url).0, let decoded = UIImage(data: data) {
-                    image = decoded
-                    break
+                for source in Self.artworkMirrors(url) {
+                    if let data = try? await URLSession.shared.data(from: source).0, let decoded = UIImage(data: data) {
+                        image = decoded
+                        break
+                    }
                 }
+                if image != nil { break }
             }
             guard let self, !Task.isCancelled else { return }
             guard let image else {
@@ -843,6 +860,17 @@ final class PlayerModel {
             self.artwork = image
             self.backgroundArtwork = image.downscaled(to: 160)
             self.artworkID = url.absoluteString
+        }
+    }
+
+    /// `i.scdn.co` is unreachable on some networks (TLS fails); Spotify serves the same covers
+    /// from its other CDN hosts.
+    private static func artworkMirrors(_ url: URL) -> [URL] {
+        guard url.host == "i.scdn.co", var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return [url] }
+        return [url] + ["image-cdn-ak.spotifycdn.com", "image-cdn-fa.spotifycdn.com"].compactMap { host in
+            components.host = host
+            return components.url
         }
     }
 }
