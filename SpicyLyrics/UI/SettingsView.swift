@@ -29,6 +29,8 @@ struct SettingsView: View {
                              value: settings.landscapeLyricsOnly ? String(localized: "Только текст") : nil) { LandscapeSettings() }
                     category(String(localized: "Жесты"), "hand.draw.fill", .red,
                              value: settings.gesturesEnabled ? String(localized: "Вкл.") : String(localized: "Выкл.")) { GestureSettings() }
+                    category(String(localized: "Экран блокировки"), "lock.iphone", .purple,
+                             value: settings.liveActivity ? String(localized: "Вкл.") : nil) { LiveActivitySettings() }
                     category(String(localized: "Картинка в картинке"), "pip.fill", .green,
                              value: settings.autoPictureInPicture ? String(localized: "Авто") : nil) { PictureInPictureSettings() }
                 }
@@ -375,6 +377,14 @@ private struct InterfaceSettings: View {
             }
 
             Section {
+                Toggle(String(localized: "Строка текста под обложкой"), isOn: $settings.artworkLyricLine)
+            } header: {
+                Text(String(localized: "Большая обложка"))
+            } footer: {
+                Text(String(localized: "Кнопка с цитатой внизу слева переключает текст и большую обложку. Под обложкой — строка, которую поют, с теми же анимациями, что и в тексте."))
+            }
+
+            Section {
                 Toggle(String(localized: "Полоска громкости"), isOn: $settings.showVolumeSlider)
                 Toggle(String(localized: "Не гасить экран"), isOn: $settings.keepScreenOn)
             }
@@ -460,6 +470,36 @@ private struct PictureInPictureSettings: View {
                 settings.pipShowTranslation = true
                 settings.pipShowFPS = false
             }
+        }
+    }
+}
+
+private struct LiveActivitySettings: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(LiveLyricsActivity.self) private var liveActivity
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
+            Section {
+                Toggle(String(localized: "Текст на экране блокировки"), isOn: $settings.liveActivity)
+                if let error = liveActivity.lastError, settings.liveActivity, !liveActivity.isRunning {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
+            } footer: {
+                Text(String(localized: "Текущая строка на экране блокировки и в Dynamic Island (Live Activity). Пока она включена, приложение работает в фоне и следит за Spotify (играет беззвучный звук, который не мешает музыке), поэтому батарея тратится чуть быстрее. Если смахнуть её с экрана блокировки, она вернётся при следующем открытии приложения."))
+            }
+
+            Section {
+                Toggle(String(localized: "Следующая строка"), isOn: $settings.liveActivityNextLine)
+                Toggle(String(localized: "Перевод"), isOn: $settings.liveActivityTranslation)
+                    .disabled(!settings.translateLyrics || settings.translationReplaces)
+            } header: {
+                Text(String(localized: "Что показывать"))
+            }
+            .disabled(!settings.liveActivity)
         }
     }
 }
@@ -703,17 +743,8 @@ private struct SourceSettings: View {
                             Text(view.title).tag(view.rawValue)
                         }
                     }
-                    if settings.hiddenLyricsView == HiddenLyricsView.visualizer.rawValue {
-                        Picker(String(localized: "Стиль"), selection: $settings.visualizerStyle) {
-                            ForEach(VisualizerStyle.allCases) { style in
-                                Text(style.title).tag(style.rawValue)
-                            }
-                        }
-                    }
                 } footer: {
-                    Text(settings.hiddenLyricsView == HiddenLyricsView.visualizer.rawValue
-                         ? String(localized: "Экспериментально: визуализатор в цветах обложки. iOS не даёт приложениям слышать звук Spotify, поэтому он следует за воспроизведением, а не за громкостью: течёт, пока песня играет, почти замирает на паузе, а «Закат» садится к концу песни.")
-                         : String(localized: "Большая обложка — во весь экран поверх фона, как в Apple Music: становится больше, когда кнопки прячутся, и чуть уменьшается на паузе."))
+                    Text(String(localized: "Большая обложка — во весь экран поверх туманности в цветах обложки, как в Apple Music: становится больше, когда кнопки прячутся, и чуть уменьшается на паузе. Туманность течёт, пока песня играет, и почти замирает на паузе."))
                 }
             }
 

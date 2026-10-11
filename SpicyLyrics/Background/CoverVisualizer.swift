@@ -2,35 +2,24 @@ import MetalKit
 import SwiftUI
 import UIKit
 
-/// Looks of the visualizer that can replace the empty screen of a song without lyrics.
-enum VisualizerStyle: String, CaseIterable, Identifiable {
-    case nebula, sunset, tunnel
+/// The nebula full screen: behind the big cover, or alone where lyrics were hidden.
+struct CoverVisualizerView: View {
+    let player: PlayerModel
+    var reduced = false
+    /// The background's darkening, so white lines stay readable on bright covers.
+    var dim: Double = 0
 
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .nebula: return String(localized: "Туманность")
-        case .sunset: return String(localized: "Закат")
-        case .tunnel: return String(localized: "Тоннель")
-        }
-    }
-
-    fileprivate var index: Float {
-        switch self {
-        case .nebula: return 0
-        case .sunset: return 1
-        case .tunnel: return 2
-        }
+    var body: some View {
+        CoverVisualizer(image: player.backgroundArtwork, imageID: player.artworkID, player: player, reduced: reduced)
+            .overlay(Color.black.opacity(dim))
+            .ignoresSafeArea()
     }
 }
 
 /// Experimental: a visualizer in the colours of the cover, for songs without lyrics. iOS lets no
 /// app hear what Spotify plays, so it can't follow the sound itself; it follows the playback
-/// instead: it runs while the song plays and drifts almost to a stop on pause, and the song's
-/// progress moves it along (the sunset sets as the song ends).
+/// instead: it runs while the song plays and settles almost to a stop on pause.
 struct CoverVisualizer: UIViewRepresentable {
-    let style: VisualizerStyle
     let image: UIImage?
     let imageID: String
     let player: PlayerModel
@@ -51,7 +40,6 @@ struct CoverVisualizer: UIViewRepresentable {
     }
 
     func updateUIView(_ view: VisualizerSurface, context: Context) {
-        view.style = style
         view.playing = player.isPlaying
         view.reduced = reduced
         view.setImage(image, id: imageID)
@@ -72,10 +60,8 @@ final class VisualizerSurface: ShaderSurface {
         var time: Float
         var progress: Float
         var energy: Float
-        var style: Float
     }
 
-    var style: VisualizerStyle = .nebula
     var playing = false { didSet { updateRate() } }
     var reduced = false { didSet { updateRate() } }
     var progress: () -> Double = { 0 }
@@ -142,7 +128,7 @@ final class VisualizerSurface: ShaderSurface {
         var uniforms = Uniforms(deep: palette.deep, vivid: palette.vivid, accent: palette.accent,
                                 resolution: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
                                 time: Float(time.truncatingRemainder(dividingBy: 10_000)),
-                                progress: Float(progress()), energy: Float(energy), style: style.index)
+                                progress: Float(progress()), energy: Float(energy))
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
     }
 }

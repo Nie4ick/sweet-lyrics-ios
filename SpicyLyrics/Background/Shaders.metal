@@ -136,7 +136,6 @@ struct VisualizerUniforms {
     float time;      // runs with the music, slows almost to a stop on pause
     float progress;  // 0…1 through the song
     float energy;    // 0 paused … 1 playing, eased
-    float style;
 };
 
 static float3 stars(float2 p, float time, float density) {
@@ -172,87 +171,10 @@ static float3 nebula(float2 p, constant VisualizerUniforms &u) {
     return col;
 }
 
-/// "Закат": a synthwave sunset. The sun goes down as the song goes on; the grid runs with
-/// the music and stops on pause.
-static float3 sunset(float2 p, constant VisualizerUniforms &u) {
-    float horizon = -0.08;
-    float3 col;
-    if (p.y > horizon) {
-        float h = (p.y - horizon) / 0.6;
-        col = mix(mix(u.accent, u.vivid, 0.4) * 0.9, u.deep * 0.25, smoothstep(0.0, 1.0, h));
-        col += stars(p, u.time, 46.0) * smoothstep(0.25, 0.8, h) * 0.8;
-
-        float sunY = mix(0.26, horizon - 0.06, u.progress);
-        float radius = 0.2;
-        float2 d = p - float2(0.0, sunY);
-        float dist = length(d);
-        // Warm at the top whatever the cover: a sunset should glow like one.
-        float3 sunColor = mix(u.vivid * 1.15, mix(u.accent, float3(1.0, 0.82, 0.45), 0.7) * 1.25,
-                              smoothstep(-radius, radius, d.y));
-        // Bands cut out of the lower half, drifting down.
-        float below = clamp(-d.y / radius, 0.0, 1.0);
-        float band = fract(d.y * 16.0 + u.time * 0.35);
-        float cut = step(band, below * 0.55) * step(d.y, 0.0);
-        float disc = smoothstep(radius, radius - 0.006, dist) * (1.0 - cut);
-        col = mix(col, sunColor, disc);
-        col += sunColor * exp(-max(dist - radius, 0.0) * 9.0) * 0.35;
-
-        // Mountains in front of the sun.
-        float ridge = horizon + 0.035 + 0.07 * fbm(float2(p.x * 2.4 + 3.0, 1.0)) * (0.6 + 0.4 * abs(p.x) * 2.0);
-        float mountain = smoothstep(ridge + 0.004, ridge, p.y);
-        float3 rock = u.deep * 0.18 + u.vivid * 0.06;
-        col = mix(col, rock, mountain);
-        col += u.vivid * smoothstep(0.012, 0.0, abs(p.y - ridge)) * 0.35 * mountain;
-    } else {
-        float z = horizon - p.y;
-        float depth = 0.32 / max(z, 0.002);
-        float2 g = float2(p.x * depth, depth + u.time * 1.4);
-        float2 fw = fwidth(g);
-        float2 lines = abs(fract(g) - 0.5) / max(fw, 1e-4);
-        float grid = 1.0 - min(min(lines.x, lines.y) * 0.6, 1.0);
-        float fade = exp(-depth * 0.045);
-        col = u.deep * 0.08 + mix(u.vivid, u.accent, 0.35) * grid * fade * 1.4;
-        // The sun's reflection.
-        col += mix(u.accent, u.vivid, 0.5) * exp(-abs(p.x) * 7.0) * exp(-z * 6.0) * 0.35;
-    }
-    col += mix(u.vivid, u.accent, 0.5) * exp(-abs(p.y - horizon) * 40.0) * 0.45;
-    return col;
-}
-
-/// "Тоннель": flying down a tunnel of light; it speeds up as the song goes on.
-static float3 tunnel(float2 p, constant VisualizerUniforms &u) {
-    float r = max(length(p), 1e-3);
-    float a = atan2(p.y, p.x);
-    float twist = sin(u.time * 0.21) * 0.6;
-    float depth = 0.32 / r + u.time * (0.9 + u.progress * 0.8);
-    float around = a / (2.0 * M_PI_F) * 12.0 + twist / r * 0.15;
-    // Rings along the tunnel, ribs around it: thin glowing lines, wider far away.
-    float2 g = float2(depth * 4.0, around);
-    float2 fw = fwidth(g);
-    float2 lines = abs(fract(g) - 0.5) / max(fw * 1.6, 1e-4);
-    float ring = 1.0 - min(lines.x, 1.0);
-    float rib = 1.0 - min(lines.y, 1.0);
-    float swirl = fbm(float2(depth * 0.6, around * 0.25));
-    float3 wall = mix(u.vivid, u.accent, 0.5 + 0.5 * sin(depth * 0.7));
-    float fade = smoothstep(0.0, 0.35, r);
-    float3 col = u.deep * 0.1 + wall * swirl * 0.35 * fade;
-    col += wall * (ring * 0.9 + rib * 0.35) * fade * smoothstep(0.02, 0.2, r);
-    // The light at the end.
-    col += mix(u.accent, float3(1.0), 0.6) * exp(-r * 9.0) * 1.2;
-    return col;
-}
-
 fragment half4 visualizerFragment(SurfaceVertex in [[stage_in]], constant VisualizerUniforms &u [[buffer(0)]]) {
     float2 frag = in.uv * u.resolution;
     float2 p = (frag - 0.5 * u.resolution) / u.resolution.y;
-    float3 col;
-    if (u.style < 0.5) {
-        col = nebula(p, u);
-    } else if (u.style < 1.5) {
-        col = sunset(p, u);
-    } else {
-        col = tunnel(p, u);
-    }
+    float3 col = nebula(p, u);
     // Dimmer while paused; a soft vignette; a little grain against banding.
     col *= 0.55 + 0.45 * u.energy;
     float2 vc = in.uv - 0.5;
