@@ -93,6 +93,34 @@ final class PlayerModel {
     @ObservationIgnored private var lastRemoteMismatch: String?
     @ObservationIgnored private var holdUntil: CFTimeInterval = 0
     @ObservationIgnored private var backoffUntil: CFTimeInterval = 0
+    /// Consecutive App Remote queries saying we are ahead, and the smallest of those leads.
+    @ObservationIgnored private var remoteAheadStreak = 0
+    @ObservationIgnored private var remoteAheadLead: Double = 0
+    /// When App Remote last said anything (event or query), to notice it going quiet.
+    @ObservationIgnored private var lastRemoteSampleAt: CFTimeInterval = 0
+    /// Asks App Remote for the position right now (set by `SpotifyAppRemote`).
+    @ObservationIgnored var onRemoteQueryNow: (() -> Void)?
+    @ObservationIgnored private var watchdogTask: Task<Void, Never>?
+    @ObservationIgnored private var lastWatch: (media: CFTimeInterval, wall: TimeInterval)?
+    @ObservationIgnored private var resyncTask: Task<Void, Never>?
+    @ObservationIgnored private var lastResyncAt: CFTimeInterval = -.infinity
+    /// Bumped when what is on screen should jump to the clock instead of animating to it
+    /// (the app or the floating window was just opened, the phone stalled).
+    private(set) var snapToken = 0
+
+    // Skipping songs without a Spicy Lyrics sync (`AppSettings.autoSkipMode`).
+    /// Songs skipped in a row; past `autoSkipLimit` skipping pauses (a playlist of nothing synced).
+    @ObservationIgnored private var autoSkipped = 0
+    /// The song last checked, so each is judged (and skipped) once.
+    @ObservationIgnored private var skipCheckedURI: String?
+    /// A song the user picked or went back to: never skipped.
+    @ObservationIgnored private var skipExemptURI: String?
+    /// Until then the next new song counts as one the user went back to.
+    @ObservationIgnored private var exemptNextSongUntil: CFTimeInterval = 0
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+    /// Shown for a moment over the player after a song was skipped.
+    private(set) var autoSkipNotice: String?
+    static let autoSkipLimit = 12
 
     private static let slewDuration: Double = 0.8
     /// Being behind Spotify by more than this jumps instead of catching up smoothly.
@@ -109,6 +137,15 @@ final class PlayerModel {
     /// not a pause): ease back by the smallest lead they saw.
     private static let aheadThreshold: Double = 0.05
     private static let aheadCount = 3
+    /// A normal round trip; anything slower (a stall, a refreshed token, a retried connection)
+    /// makes the answer this much less certain, and only a fast answer may fine-tune the clock.
+    private static let normalRoundTrip: Double = 0.3
+    /// App Remote answers slower than this went through a busy main thread: not trusted.
+    private static let remoteMaxRoundTrip: Double = 0.25
+    /// Queries only move the clock forward, unless this many in a row agree we are this far
+    /// ahead (a bad reading pushed it there): then ease back by the smallest lead they saw.
+    private static let remoteAheadThreshold: Double = 0.35
+    private static let remoteAheadCount = 3
 
     /// The user's saved TTML files.
     @ObservationIgnored let localLyrics: LocalLyricsStore
@@ -147,6 +184,8 @@ final class PlayerModel {
     private(set) var isResyncing = false
     /// On-device translations of the current lyrics, keyed by the original line text.
     private(set) var translations: [String: String] = [:]
+    /// Why the last translation failed (shown in settings).
+    var translationError: String?
     @ObservationIgnored private var outputLatency: Double = 0
     @ObservationIgnored private var playingOnThisPhone = false
     @ObservationIgnored private var routeObserver: NSObjectProtocol?
@@ -320,6 +359,11 @@ final class PlayerModel {
                     decision = "frozen device, catch up → blend"
                 }
             }
+        } else if roundTrip > Self.normalRoundTrip * 2, abs(drift) < Self.resyncThreshold {
+            // A slow answer (the phone lagged, a token was refreshed, the connection retried): its
+            // position is off by up to half the round trip either way. Wait for a fast one.
+            refineSamples = max(refineSamples, 1)
+            decision = "slow answer, kept clock"
         } else {
             // Spotify's position can only be late (a stale or cached answer), never early. So a
             // report ahead of us means we are behind; one behind us is old news, unless it is far
@@ -327,11 +371,13 @@ final class PlayerModel {
             let refining = refineSamples > 0
             refineSamples = max(0, refineSamples - 1)
             decision = "kept clock"
+            // Whatever a somewhat slow request adds to the uncertainty is not corrected for.
+            let slack = max(0, roundTrip - Self.normalRoundTrip) / 2
             if drift > Self.resyncThreshold {
                 setClock(measured, at: now)
                 decision = "far behind → set"
-            } else if drift > (refining ? Self.refineThreshold : Self.catchUpThreshold) {
-                blend(to: measured, predicted: predicted, now: now)
+            } else if drift - slack > (refining ? Self.refineThreshold : Self.catchUpThreshold) {
+                blend(to: measured - slack, predicted: predicted, now: now)
                 behindStreak = 0
                 aheadStreak = 0
                 decision = refining ? "refine → blend" : "behind → blend"
@@ -376,7 +422,9 @@ final class PlayerModel {
         remoteConnected = connected
         remoteQueriesFrozen = false
         remoteDisagreements = 0
+        remoteAheadStreak = 0
         lastRemoteQuery = nil
+        lastRemoteSampleAt = connected ? MediaClock.now() : 0
         // Back to the Web API: take its next answer as it is.
         if !connected, content != nil { isResyncing = true }
     }
@@ -409,6 +457,7 @@ final class PlayerModel {
             + "\(sample.uri.split(separator: ":").last.map { String($0.prefix(8)) } ?? "?") \"\(sample.name.prefix(24))\""
             + " age \(max(0, now - sample.measuredAt).signedMs)"
         remoteURI = sample.uri
+        lastRemoteSampleAt = now
         let measured = sample.position + (sample.paused ? 0 : max(0, now - sample.measuredAt))
 
         if track?.uri != sample.uri {
@@ -465,6 +514,11 @@ final class PlayerModel {
             log.add("remote", "\(summary) → ignored (not playing)")
             return
         }
+        // The answer went through a busy main thread: when it was read is anyone's guess.
+        guard sample.roundTrip <= Self.remoteMaxRoundTrip else {
+            log.add("remote", "\(summary) drift \(drift.signedMs) → ignored (slow answer, rtt \(sample.roundTrip.signedMs))")
+            return
+        }
         if let last = lastRemoteQuery, sample.measuredAt - last.at > 0.8 {
             let frozen = sample.position - last.position < (sample.measuredAt - last.at) * 0.5
             if frozen != remoteQueriesFrozen {
@@ -480,10 +534,23 @@ final class PlayerModel {
         var decision = "kept clock"
         if drift > Self.resyncThreshold {
             setClock(measured, at: now)
+            remoteAheadStreak = 0
             decision = "far behind → set"
         } else if drift > Self.refineThreshold {
             blend(to: measured, predicted: predicted, now: now)
+            remoteAheadStreak = 0
             decision = "behind → blend"
+        } else if drift < -Self.remoteAheadThreshold {
+            remoteAheadLead = remoteAheadStreak == 0 ? -drift : min(remoteAheadLead, -drift)
+            remoteAheadStreak += 1
+            decision = "ahead (\(remoteAheadStreak))"
+            if remoteAheadStreak >= Self.remoteAheadCount {
+                blend(to: predicted + unapplied - remoteAheadLead, predicted: predicted, now: now)
+                decision = "ahead \(remoteAheadStreak)× → ease back \(remoteAheadLead.signedMs)"
+                remoteAheadStreak = 0
+            }
+        } else {
+            remoteAheadStreak = 0
         }
         log.add("remote", "\(summary) drift \(drift.signedMs) → \(decision)")
         log.synced("App Remote", drift: drift)
@@ -525,11 +592,81 @@ final class PlayerModel {
                 try? await Task.sleep(for: .seconds(interval))
             }
         }
+        startWatchdog()
     }
 
     func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+        watchdogTask?.cancel()
+        watchdogTask = nil
+        resyncTask?.cancel()
+        resyncTask = nil
+    }
+
+    // MARK: Safety checks
+
+    /// A moment the clock is most likely to be off (the app or the floating window opening or
+    /// closing, a stall): check it against Spotify right away, then a few more times quickly.
+    func resync(_ reason: String) {
+        guard pollTask != nil else { return }
+        snapToken += 1
+        let now = MediaClock.now()
+        guard now - lastResyncAt > 0.5 else { return }
+        lastResyncAt = now
+        SyncLog.shared.add("check", "\(reason) → checking the time")
+        if !remoteAuthority { refineSamples = Self.refineCount }
+        resyncTask?.cancel()
+        resyncTask = Task { [weak self] in
+            for (step, delay) in [0.0, 0.4, 0.8, 1.6].enumerated() {
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                guard !Task.isCancelled, let self, self.pollTask != nil else { return }
+                if self.remoteAuthority {
+                    // App Remote is exact; the Web API only checks it has not gone stale.
+                    self.onRemoteQueryNow?()
+                    if step == 0 { _ = await self.pollOnce() }
+                } else {
+                    _ = await self.pollOnce()
+                }
+            }
+        }
+    }
+
+    /// Twice a second while following Spotify: notices a stuck main thread, a phone that slept
+    /// (the media clock stops, the wall clock does not) and App Remote going silent.
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        lastWatch = nil
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled, let self else { return }
+                self.watch()
+            }
+        }
+    }
+
+    private func watch() {
+        checkAutoSkip()
+        let media = MediaClock.now()
+        let wall = Date().timeIntervalSince1970
+        defer { lastWatch = (media, wall) }
+        guard let last = lastWatch else { return }
+        let mediaGap = media - last.media
+        let slept = (wall - last.wall) - mediaGap
+        if abs(slept) > 0.75 {
+            // The clock was extrapolated over time that did not pass for it: start over.
+            if isPlaying, content != nil { isResyncing = true }
+            resync("clock skipped \(slept.signedMs)")
+        } else if mediaGap > 1.5 {
+            resync("stall \(mediaGap.signedMs)")
+        } else if remoteAuthority, isPlaying, lastRemoteSampleAt > 0,
+                  media - lastRemoteSampleAt > max(6, settings.remoteQueryInterval * 4) {
+            // Connected, but not a word from Spotify for a while: the connection went stale.
+            SyncLog.shared.add("check", "App Remote silent for \(Int(media - lastRemoteSampleAt)) s")
+            lastRemoteSampleAt = media
+            onRemoteStale?()
+        }
     }
 
     /// Returns how long to wait before the next poll.
@@ -539,7 +676,7 @@ final class PlayerModel {
         do {
             let sentAt = MediaClock.now()
             let snapshot = try await api.playbackState()
-            apply(snapshot, roundTrip: MediaClock.now() - sentAt)
+            apply(snapshot, roundTrip: snapshot?.roundTrip ?? MediaClock.now() - sentAt)
             accessProblem = nil
             isResyncing = false
             return nextPollInterval()
@@ -562,6 +699,7 @@ final class PlayerModel {
         } catch is CancellationError {
             return 1
         } catch {
+            if Task.isCancelled { return 1 }
             SyncLog.shared.add("web", "poll failed: \(error.localizedDescription)")
             // Offline is fine while the Spotify app on this phone keeps the time.
             if !remoteAuthority { statusMessage = error.localizedDescription }
@@ -604,7 +742,11 @@ final class PlayerModel {
     }
 
     func next() { control({ [api] in try await api.next() }) }
-    func previous() { control({ [api] in try await api.previous() }) }
+
+    func previous() {
+        exemptNextSongUntil = MediaClock.now() + 5
+        control({ [api] in try await api.previous() })
+    }
 
     func seek(to seconds: Double) {
         control({ [api] in try await api.seek(to: seconds) }, optimistic: { [weak self] in
@@ -636,6 +778,7 @@ final class PlayerModel {
 
     /// Plays `track`, continuing with the album or playlist it came from when there is one.
     func play(_ track: TrackSummary, context: String?) {
+        skipExemptURI = track.uri
         let contexts = [context, track.albumURI].compactMap { $0 }.filter(Self.supportsOffset)
         control({ [api] in
             for contextURI in contexts {
@@ -689,9 +832,64 @@ final class PlayerModel {
         }
     }
 
+    // MARK: Auto-skip
+
+    /// Lyrics count as a Spicy Lyrics sync when they come from Spicy Lyrics (or the user's own
+    /// TTML) and are timed: by line, or by word when only word-by-word sync is wanted.
+    private static func hasSpicySync(_ lyrics: PreparedLyrics, wordByWord: Bool) -> Bool {
+        let source = lyrics.sourceName
+        guard source.hasPrefix("Spicy Lyrics") || source.hasPrefix(LocalLyricsStore.sourceName) else { return false }
+        return wordByWord ? lyrics.kind == .syllable : lyrics.kind != .static
+    }
+
+    /// Skips the playing song when it has no Spicy Lyrics sync (and the setting asks for that).
+    /// Runs from the watchdog: twice a second while following Spotify.
+    private func checkAutoSkip() {
+        guard let mode = AutoSkipMode(rawValue: settings.autoSkipMode), mode != .off,
+              isPlaying, let track, skipCheckedURI != track.uri else { return }
+        let qualifies: Bool
+        switch lyricsState {
+        case .loaded(let lyrics): qualifies = Self.hasSpicySync(lyrics, wordByWord: mode == .wordByWord)
+        case .notFound: qualifies = false
+        // Still loading, or offline: no telling yet.
+        default: return
+        }
+        skipCheckedURI = track.uri
+        if qualifies {
+            autoSkipped = 0
+            return
+        }
+        guard track.uri != skipExemptURI else { return }
+        guard autoSkipped < Self.autoSkipLimit else {
+            if autoSkipped == Self.autoSkipLimit {
+                autoSkipped += 1
+                showNotice(String(localized: "\(Self.autoSkipLimit) песен подряд без синхронизации — пропуск на паузе"))
+            }
+            return
+        }
+        autoSkipped += 1
+        SyncLog.shared.add("skip", "\"\(track.title.prefix(30))\": no Spicy Lyrics sync, skipping (\(autoSkipped))")
+        showNotice(String(localized: "Пропущено: \(track.title)"))
+        next()
+    }
+
+    private func showNotice(_ text: String) {
+        autoSkipNotice = text
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            self?.autoSkipNotice = nil
+        }
+    }
+
     // MARK: Lyrics & artwork
 
     private func onContentChanged() {
+        if MediaClock.now() < exemptNextSongUntil, let uri = track?.uri {
+            skipExemptURI = uri
+            exemptNextSongUntil = 0
+        }
         translations = [:]
         lyricsTask?.cancel()
         lyricsTask = nil
@@ -832,6 +1030,10 @@ final class PlayerModel {
         lastArtworkURL = url
         artworkTask?.cancel()
         guard let url else {
+            // A song App Remote announced has no cover URL yet (its own cover or the Web API's
+            // comes in a moment): keep the last one until then, so the background flows from
+            // cover to cover instead of dipping to black.
+            if case .track = content, artwork != nil { return }
             artwork = nil
             backgroundArtwork = nil
             artworkID = ""

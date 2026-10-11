@@ -39,10 +39,13 @@ struct NowPlayingView: View {
             // Side by side in landscape, and on iPad in any orientation (wide enough for both).
             let landscape = (size.width > size.height && size.width > 560) || size.width >= 700
             ZStack {
-                // The PiP layer has to be in the window; it sits behind everything.
+                // The PiP layer has to be in the window; it sits behind everything, right under
+                // the lyrics: the floating window opens out of it and closes back into it.
                 if !pip.previewing {
+                    let source = pipSource(in: size, landscape: landscape)
                     PictureInPictureHost(pip: pip)
-                        .frame(width: 80, height: 40)
+                        .frame(width: source.width, height: source.height)
+                        .position(x: source.midX, y: source.midY)
                         .allowsHitTesting(false)
                 }
 
@@ -50,16 +53,46 @@ struct NowPlayingView: View {
                     image: settings.dynamicBackground ? player.backgroundArtwork : nil,
                     imageID: player.artworkID,
                     animated: settings.dynamicBackground && !reduced,
+                    playing: player.isPlaying,
                     dim: settings.backgroundDim,
                     speed: settings.backgroundSpeed,
                     blur: settings.backgroundBlur,
                     saturation: settings.backgroundSaturation
                 )
 
+                // Experimental: a visualizer where the lyrics were hidden.
+                ZStack {
+                    if showVisualizer {
+                        CoverVisualizer(style: VisualizerStyle(rawValue: settings.visualizerStyle) ?? .nebula,
+                                        image: player.backgroundArtwork, imageID: player.artworkID,
+                                        player: player, reduced: reduced)
+                            .ignoresSafeArea()
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.8), value: showVisualizer)
+
                 if landscape {
                     landscapeLayout(size)
                 } else {
                     portraitLayout(size)
+                }
+
+                if let notice = player.autoSkipNotice {
+                    Label(notice, systemImage: "forward.end.fill")
+                        .font(.footnote.weight(.semibold))
+                        .lineLimit(2)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .environment(\.colorScheme, .dark)
+                        .padding(.horizontal, 24)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .padding(.top, (chromeVisible && !landscape ? headerHeight : 0) + 8)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .allowsHitTesting(false)
                 }
 
                 Color.clear
@@ -85,12 +118,7 @@ struct NowPlayingView: View {
         .background { keyboardShortcuts }
         .statusBarHidden(!chromeVisible)
         .persistentSystemOverlays(chromeVisible ? .automatic : .hidden)
-        .task(id: AutoHideKey(tick: interactionTick, eligible: canAutoHide)) {
-            guard canAutoHide else { return }
-            try? await Task.sleep(for: .seconds(lyricsOnly ? 4 : settings.autoHideDelay))
-            guard !Task.isCancelled, canAutoHide else { return }
-            withAnimation(Self.chromeAnimation) { chromeVisible = false }
-        }
+        .task(id: AutoHideKey(tick: interactionTick, eligible: canAutoHide)) { await autoHideAfterDelay() }
         .onChange(of: player.isPlaying) { _, playing in
             // Pausing brings the controls back, like Apple Music (not in lyrics-only mode).
             if !playing && !lyricsOnly { showChrome() }
@@ -103,6 +131,8 @@ struct NowPlayingView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Self.relayoutWindows() }
         }
+        .onChange(of: settings.pipFormat) { _, _ in pip.refreshFrame() }
+        .animation(.easeInOut(duration: 0.3), value: player.autoSkipNotice)
         .onChange(of: lyricsOnly) { _, value in
             if value { hideChrome() }
         }
@@ -169,22 +199,7 @@ struct NowPlayingView: View {
         }
         #endif
         .onChange(of: settings.autoPictureInPicture) { _, enabled in pip.setAutomaticStart(enabled) }
-        .alert(String(localized: "Картинка в картинке"), isPresented: Binding(
-            get: { pip.lastError != nil && !pip.isActive },
-            set: { _ in }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(pip.lastError ?? "")
-        }
-        .alert("Spotify", isPresented: Binding(
-            get: { player.transientError != nil },
-            set: { if !$0 { player.transientError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(player.transientError ?? "")
-        }
+        .modifier(NowPlayingAlerts(pip: pip, player: player))
     }
 
     // MARK: Chrome visibility
@@ -227,6 +242,37 @@ struct NowPlayingView: View {
     /// Low Power Mode, a hot phone, or the battery saver setting.
     private var reduced: Bool { settings.powerSaving || performance.constrained }
 
+    /// Where the floating window opens from and closes back onto: across the lyrics, with the
+    /// window's line in focus on the app's active line, so the window seems to lift the lyrics
+    /// off the screen and put them back.
+    private func pipSource(in size: CGSize, landscape: Bool) -> CGRect {
+        let format = settings.format
+        let area: CGRect
+        var top: CGFloat = 0, bottom: CGFloat = 0
+        if landscape {
+            let column = min(size.width * 0.4, 420) + 12
+            area = CGRect(x: column, y: 0, width: max(1, size.width - column), height: size.height)
+        } else {
+            area = CGRect(origin: .zero, size: size)
+            top = chromeVisible ? headerHeight : 0
+            bottom = chromeVisible ? controlsHeight : 0
+        }
+        // `LyricsView.anchor`: the active line sits 30 pt above this spot in the visible lyrics.
+        let visible = max(area.height - top - bottom, 1)
+        let activeY = area.minY + top + visible * CGFloat(clamp(settings.activeLinePosition, 0.2, 0.8)) - 20
+        var width = max(area.width, 1)
+        var height = width / format.aspect
+        // Kept on screen: AVKit animates from the part of the layer it can see.
+        if height > size.height {
+            height = size.height
+            width = height * format.aspect
+        }
+        let fraction = PiPFrameRenderer.focusFraction(format: format, showTitle: settings.pipShowTitle,
+                                                      textScale: settings.pipTextScale)
+        let y = min(max(0, activeY - fraction * height), max(0, size.height - height))
+        return CGRect(x: area.midX - width / 2, y: y, width: width, height: height)
+    }
+
     private var lyricsLoaded: Bool {
         if case .loaded = player.lyricsState { return true }
         return false
@@ -244,12 +290,25 @@ struct NowPlayingView: View {
         }
     }
 
+    /// The experimental visualizer fills in for lyrics hidden by the user's choice.
+    private var showVisualizer: Bool {
+        settings.hiddenLyricsView == HiddenLyricsView.visualizer.rawValue && lyricsHidden && CoverVisualizer.isSupported
+    }
+
     /// Landscape with hidden lyrics: the controls fade away too, leaving the background alone.
     private var backgroundOnly: Bool { isLandscape && lyricsHidden }
 
     private var canAutoHide: Bool {
         guard chromeVisible, !showSettings, !showPicker, !showSetupGuide, !showOwnLyrics else { return false }
         return lyricsOnly || backgroundOnly || (settings.autoHideControls && player.isPlaying && lyricsLoaded)
+    }
+
+    /// Hides the controls after the set delay, unless something brought them back meanwhile.
+    private func autoHideAfterDelay() async {
+        guard canAutoHide else { return }
+        try? await Task.sleep(for: .seconds(lyricsOnly ? 4 : settings.autoHideDelay))
+        guard !Task.isCancelled, canAutoHide else { return }
+        withAnimation(Self.chromeAnimation) { chromeVisible = false }
     }
 
     private func showChrome() {
@@ -522,13 +581,11 @@ struct NowPlayingView: View {
             } label: {
                 Label(String(localized: "Свой текст (TTML)"), systemImage: "doc.text")
             }
-            if #available(iOS 18.0, *) {
-                Button {
-                    settings.translateLyrics.toggle()
-                } label: {
-                    Label(settings.translateLyrics ? String(localized: "Выключить перевод") : String(localized: "Включить перевод"),
-                          systemImage: "character.bubble")
-                }
+            Button {
+                settings.translateLyrics.toggle()
+            } label: {
+                Label(settings.translateLyrics ? String(localized: "Выключить перевод") : String(localized: "Включить перевод"),
+                      systemImage: "character.bubble")
             }
             if LyricsPictureInPicture.isSupported {
                 Button {
@@ -597,14 +654,44 @@ struct NowPlayingView: View {
     @ViewBuilder
     private func lyricsArea(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat) -> some View {
         if lyricsHidden {
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { toggleChrome() }
-                .trackSwipes(enabled: settings.gesturesEnabled && player.track != nil,
-                             onNext: { skip(.next) }, onPrevious: { skip(.previous) })
+            ZStack {
+                Color.clear
+                if settings.hiddenLyricsView == HiddenLyricsView.artwork.rawValue {
+                    bigArtwork(topInset: topInset, bottomInset: bottomInset)
+                        .transition(.opacity)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { toggleChrome() }
+            .trackSwipes(enabled: settings.gesturesEnabled && player.track != nil,
+                         onNext: { skip(.next) }, onPrevious: { skip(.previous) })
         } else {
             visibleLyricsArea(topInset: topInset, bottomInset: bottomInset, horizontalPadding: horizontalPadding)
         }
+    }
+
+    /// A song without lyrics shown: its cover, as big as the free space allows, over the moving
+    /// background. It grows when the controls hide and sinks back a little on pause, like Apple
+    /// Music; a new song's cover fades in over the old one.
+    private func bigArtwork(topInset: CGFloat, bottomInset: CGFloat) -> some View {
+        GeometryReader { geometry in
+            let margin: CGFloat = isLandscape ? 24 : 28
+            let freeHeight = geometry.size.height - topInset - bottomInset
+            let side = max(0, min(geometry.size.width - margin * 2, freeHeight - margin * 2, 720))
+            ZStack {
+                artwork(side: side, cornerRadius: max(10, side * 0.035))
+                    .id(player.artworkID)
+                    .transition(.opacity)
+            }
+            .shadow(color: .black.opacity(0.4), radius: 30, y: 16)
+            .scaleEffect(player.isPlaying ? 1 : 0.88)
+            .position(x: geometry.size.width / 2, y: topInset + freeHeight / 2)
+            .animation(.spring(response: 0.5, dampingFraction: 0.75), value: player.isPlaying)
+            .animation(.easeInOut(duration: 0.6), value: player.artworkID)
+            .animation(Self.chromeAnimation, value: topInset)
+            .animation(Self.chromeAnimation, value: bottomInset)
+        }
+        .accessibilityHidden(true)
     }
 
     private func visibleLyricsArea(topInset: CGFloat, bottomInset: CGFloat, horizontalPadding: CGFloat) -> some View {
@@ -724,6 +811,37 @@ struct NowPlayingView: View {
         .foregroundStyle(.white)
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// The player's two alerts, kept out of its long modifier chain (older compilers took too long
+/// to type-check them inline).
+private struct NowPlayingAlerts: ViewModifier {
+    let pip: LyricsPictureInPicture
+    let player: PlayerModel
+
+    private var pipErrorShown: Binding<Bool> {
+        Binding(get: { pip.lastError != nil && !pip.isActive }, set: { _ in })
+    }
+
+    private var transientErrorShown: Binding<Bool> {
+        Binding(get: { player.transientError != nil }, set: { shown in
+            if !shown { player.transientError = nil }
+        })
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .alert(String(localized: "Картинка в картинке"), isPresented: pipErrorShown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(pip.lastError ?? "")
+            }
+            .alert("Spotify", isPresented: transientErrorShown) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(player.transientError ?? "")
+            }
     }
 }
 
