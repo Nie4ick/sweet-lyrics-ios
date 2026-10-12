@@ -48,9 +48,6 @@ final class SpotifyAppRemote: NSObject {
     @ObservationIgnored private var autoWoke = false
 
     static let scope = "app-remote-control"
-    /// Set once App Remote has connected: after that, a refusal (a fresh install of this app, Spotify
-    /// restarted) is fixed by waking Spotify, without the user having to find the button.
-    private static let connectedBeforeKey = "appRemoteConnectedBefore"
 
     init(auth: SpotifyAuth, settings: AppSettings) {
         self.auth = auth
@@ -213,7 +210,6 @@ final class SpotifyAppRemote: NSObject {
         status = .connected
         failures = 0
         lastError = nil
-        UserDefaults.standard.set(true, forKey: Self.connectedBeforeKey)
         SyncLog.shared.add("remote", "connected")
         player?.setRemoteConnected(true)
         remote.playerAPI?.delegate = self
@@ -243,8 +239,7 @@ final class SpotifyAppRemote: NSObject {
         status = .unavailable
         failures += 1
         // Spotify refuses apps it was not woken by: after two refusals, wake it once (if allowed).
-        let hasWorked = UserDefaults.standard.bool(forKey: Self.connectedBeforeKey)
-        if failures == 2, settings.autoWakeSpotify || hasWorked, !autoWoke, UIApplication.shared.applicationState == .active {
+        if failures == 2, settings.autoWakeSpotify, !autoWoke, UIApplication.shared.applicationState == .active {
             autoWoke = true
             SyncLog.shared.add("remote", "refused twice, waking Spotify")
             wakeSpotify()
@@ -356,6 +351,13 @@ extension SpotifyAppRemote: SPTAppRemotePlayerStateDelegate {
 }
 
 extension SpotifyAppRemote {
+    /// The song plays on another device (computer, speaker). The Spotify app on this phone has nothing
+    /// to report then, so being refused is expected and nothing is wrong.
+    var otherDeviceActive: Bool {
+        guard let player else { return false }
+        return player.deviceName != nil && !player.isPlayingOnThisPhone
+    }
+
     /// The connection state in words, for settings and the sync badge.
     var statusText: String {
         switch status {
@@ -363,7 +365,9 @@ extension SpotifyAppRemote {
         case .needsLogin: return String(localized: "Нужно войти заново")
         case .connecting: return String(localized: "Подключение…")
         case .connected: return String(localized: "Подключено")
-        case .unavailable: return String(localized: "Spotify не отвечает")
+        case .unavailable:
+            return otherDeviceActive ? String(localized: "Не нужна: играет на другом устройстве")
+                                     : String(localized: "Spotify не отвечает")
         }
     }
 }

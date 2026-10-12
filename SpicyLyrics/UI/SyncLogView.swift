@@ -80,7 +80,9 @@ struct SyncLogView: View {
             "offset \(Int(settings.timingOffsetMs)) ms, headphone latency \(settings.compensateOutputLatency ? "on" : "off") "
                 + "(route \(Int(AudioRoute.outputLatency * 1000)) ms)",
             "App Remote \(settings.useAppRemote ? "on" : "off"): \(appRemote.status), keeps clock \(player.remoteConnected)",
-            "web poll \(settings.webPollInterval)s, remote query \(settings.remoteQueryInterval)s",
+            "web poll \(settings.webPollInterval)s, remote query \(settings.remoteQueryInterval)s, auto wake \(settings.autoWakeSpotify ? "on" : "off")",
+            "PiP: opens itself \(settings.autoPictureInPicture ? "on" : "off"), closes on return \(settings.closePiPOnReturn ? "on" : "off"), "
+                + "format \(settings.pipFormat)",
             "now: \(player.isPlaying ? "playing" : "paused") at \(player.playbackPosition().s3)s, "
                 + "track \"\(player.track?.title ?? "-")\" \(player.track?.uri ?? "")",
         ]
@@ -99,7 +101,7 @@ struct SyncIndicator: View {
         Menu {
             Section {
                 Text(String(localized: "Связь с приложением Spotify: \(settings.useAppRemote ? appRemote.statusText : String(localized: "Выключено"))"))
-                if let error = appRemote.lastError, appRemote.status != .connected {
+                if let error = appRemote.lastError, appRemote.status != .connected, !appRemote.otherDeviceActive {
                     Text(error)
                 }
             }
