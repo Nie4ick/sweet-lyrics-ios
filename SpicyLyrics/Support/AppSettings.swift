@@ -161,6 +161,21 @@ final class AppSettings {
     var hiddenLyricsView: String { didSet { defaults.set(hiddenLyricsView, forKey: Keys.hiddenLyricsView) } }
     /// `NebulaColors.rawValue`: where the nebula takes its colours from.
     var nebulaColors: String { didSet { defaults.set(nebulaColors, forKey: Keys.nebulaColors) } }
+    // The TV (AirPlay screen mirroring or a cable): set up from the phone while it is connected.
+    /// × the lyrics' size on the TV.
+    var tvLyricsScale: Double { didSet { defaults.set(tvLyricsScale, forKey: Keys.tvLyricsScale) } }
+    /// Milliseconds the TV's lyrics run ahead (a TV shows the picture later than the sound plays).
+    var tvOffsetMs: Double { didSet { defaults.set(tvOffsetMs, forKey: Keys.tvOffsetMs) } }
+    /// Cover and title on the left of the TV's lyrics.
+    var tvShowNowBar: Bool { didSet { defaults.set(tvShowNowBar, forKey: Keys.tvShowNowBar) } }
+    /// The timeline under the TV's title.
+    var tvShowTimeline: Bool { didSet { defaults.set(tvShowTimeline, forKey: Keys.tvShowTimeline) } }
+    /// `TVBackground.rawValue`.
+    var tvBackground: String { didSet { defaults.set(tvBackground, forKey: Keys.tvBackground) } }
+    /// Black layer over the TV's background.
+    var tvBackgroundDim: Double { didSet { defaults.set(tvBackgroundDim, forKey: Keys.tvBackgroundDim) } }
+    /// The phone keeps showing the lyrics too, instead of the TV's settings.
+    var tvPhoneLyrics: Bool { didSet { defaults.set(tvPhoneLyrics, forKey: Keys.tvPhoneLyrics) } }
     /// `ArtworkBackground.rawValue`: what flows behind the big cover.
     var artworkBackground: String { didSet { defaults.set(artworkBackground, forKey: Keys.artworkBackground) } }
     /// One synced line under the big cover.
@@ -193,6 +208,9 @@ final class AppSettings {
     var activeLinePosition: Double { didSet { defaults.set(activeLinePosition, forKey: Keys.activeLinePosition) } }
     /// × the speed of the glide to the next line.
     var scrollSpeed: Double { didSet { defaults.set(scrollSpeed, forKey: Keys.scrollSpeed) } }
+    /// Start scrolling to the next line a bit before it is sung.
+    var earlyScroll: Bool { didSet { defaults.set(earlyScroll, forKey: Keys.earlyScroll) } }
+    var earlyScrollMs: Double { didSet { defaults.set(earlyScrollMs, forKey: Keys.earlyScrollMs) } }
     /// × the brightness of the translation under a line.
     var translationBrightness: Double { didSet { defaults.set(translationBrightness, forKey: Keys.translationBrightness) } }
     /// × the saturation of the cover behind the lyrics (app and PiP).
@@ -275,6 +293,13 @@ final class AppSettings {
             Keys.hiddenLyricsView: HiddenLyricsView.background.rawValue,
             Keys.artworkLyricLine: true,
             Keys.nebulaColors: NebulaColors.cover.rawValue,
+            Keys.tvLyricsScale: 1.0,
+            Keys.tvOffsetMs: 0.0,
+            Keys.tvShowNowBar: true,
+            Keys.tvShowTimeline: true,
+            Keys.tvBackground: TVBackground.cover.rawValue,
+            Keys.tvBackgroundDim: Self.defaultBackgroundDim,
+            Keys.tvPhoneLyrics: false,
             Keys.artworkBackground: ArtworkBackground.nebula.rawValue,
             Keys.autoSkip: AutoSkipMode.off.rawValue,
             Keys.blurStrength: 1.0,
@@ -289,6 +314,8 @@ final class AppSettings {
             Keys.lyricsWeight: LyricsWeight.bold.rawValue,
             Keys.activeLinePosition: 0.5,
             Keys.scrollSpeed: 1.0,
+            Keys.earlyScroll: false,
+            Keys.earlyScrollMs: 250.0,
             Keys.translationBrightness: 1.0,
             Keys.backgroundSaturation: 1.0,
             Keys.lyricsFrameRate: 60.0,
@@ -349,6 +376,13 @@ final class AppSettings {
         hiddenLyricsView = defaults.string(forKey: Keys.hiddenLyricsView) ?? HiddenLyricsView.background.rawValue
         artworkLyricLine = defaults.bool(forKey: Keys.artworkLyricLine)
         nebulaColors = defaults.string(forKey: Keys.nebulaColors) ?? NebulaColors.cover.rawValue
+        tvLyricsScale = defaults.double(forKey: Keys.tvLyricsScale)
+        tvOffsetMs = defaults.double(forKey: Keys.tvOffsetMs)
+        tvShowNowBar = defaults.bool(forKey: Keys.tvShowNowBar)
+        tvShowTimeline = defaults.bool(forKey: Keys.tvShowTimeline)
+        tvBackground = defaults.string(forKey: Keys.tvBackground) ?? TVBackground.cover.rawValue
+        tvBackgroundDim = defaults.double(forKey: Keys.tvBackgroundDim)
+        tvPhoneLyrics = defaults.bool(forKey: Keys.tvPhoneLyrics)
         artworkBackground = defaults.string(forKey: Keys.artworkBackground) ?? ArtworkBackground.nebula.rawValue
         autoSkipMode = defaults.string(forKey: Keys.autoSkip) ?? AutoSkipMode.off.rawValue
         blurStrength = defaults.double(forKey: Keys.blurStrength)
@@ -363,6 +397,8 @@ final class AppSettings {
         lyricsWeight = defaults.string(forKey: Keys.lyricsWeight) ?? LyricsWeight.bold.rawValue
         activeLinePosition = defaults.double(forKey: Keys.activeLinePosition)
         scrollSpeed = defaults.double(forKey: Keys.scrollSpeed)
+        earlyScroll = defaults.bool(forKey: Keys.earlyScroll)
+        earlyScrollMs = defaults.double(forKey: Keys.earlyScrollMs)
         translationBrightness = defaults.double(forKey: Keys.translationBrightness)
         backgroundSaturation = defaults.double(forKey: Keys.backgroundSaturation)
         lyricsFrameRate = defaults.double(forKey: Keys.lyricsFrameRate)
@@ -448,6 +484,8 @@ final class AppSettings {
         lyricsWeight = LyricsWeight.bold.rawValue
         activeLinePosition = 0.5
         scrollSpeed = 1
+        earlyScroll = false
+        earlyScrollMs = 250
     }
 
     /// The translation's own look (its page in settings).
@@ -484,6 +522,15 @@ final class AppSettings {
         backgroundSpeed = 1
         backgroundBlur = 1
         backgroundSaturation = 1
+    }
+
+    func resetTV() {
+        tvLyricsScale = 1
+        tvOffsetMs = 0
+        tvShowNowBar = true
+        tvShowTimeline = true
+        tvBackground = TVBackground.cover.rawValue
+        tvBackgroundDim = Self.defaultBackgroundDim
     }
 
     func resetPlaybackTransitions() {
@@ -544,6 +591,13 @@ final class AppSettings {
         static let hiddenLyricsView = "hiddenLyricsView"
         static let artworkLyricLine = "artworkLyricLine"
         static let nebulaColors = "nebulaColors"
+        static let tvLyricsScale = "tvLyricsScale"
+        static let tvOffsetMs = "tvOffsetMs"
+        static let tvShowNowBar = "tvShowNowBar"
+        static let tvShowTimeline = "tvShowTimeline"
+        static let tvBackground = "tvBackground"
+        static let tvBackgroundDim = "tvBackgroundDim"
+        static let tvPhoneLyrics = "tvPhoneLyrics"
         static let artworkBackground = "artworkBackground"
         static let autoSkip = "autoSkipMode"
         static let blurStrength = "blurStrength"
@@ -560,6 +614,8 @@ final class AppSettings {
         static let pipFormat = "pipFormat"
         static let activeLinePosition = "activeLinePosition"
         static let scrollSpeed = "scrollSpeed"
+        static let earlyScroll = "earlyScroll"
+        static let earlyScrollMs = "earlyScrollMs"
         static let translationBrightness = "translationBrightness"
         static let backgroundSaturation = "backgroundSaturation"
         static let lyricsFrameRate = "lyricsFrameRate"
@@ -694,3 +750,24 @@ enum LyricsWeight: String, CaseIterable, Identifiable {
         }
     }
 }
+
+/// What flows behind the lyrics on the TV.
+enum TVBackground: String, CaseIterable, Identifiable {
+    /// The cover, like behind the lyrics on the phone.
+    case cover
+    case nebula
+    /// Plain black: nothing moving.
+    case black
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .cover: return String(localized: "Обложка")
+        case .nebula: return String(localized: "Туманность")
+        case .black: return String(localized: "Чёрный")
+        }
+    }
+}
+
+/// Where the nebula behind the big cover takes its colours from.

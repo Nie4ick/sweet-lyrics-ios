@@ -21,6 +21,8 @@ struct LyricsView: View {
     /// Tapping a line seeks to it. Off while the controls are hidden: the first tap only brings
     /// them back, so reaching the buttons from full-screen lyrics never rewinds the song.
     var tapSeeks = true
+    /// Seconds added to the TV lyric clock to compensate for picture delay.
+    var clockOffset: Double = 0
 
     @State private var animator: LyricsAnimator
     @State private var userScrolling = false
@@ -38,7 +40,7 @@ struct LyricsView: View {
          topInset: CGFloat = 0, bottomInset: CGFloat = 0, horizontalPadding: CGFloat = 24,
          reduced: Bool = false, fontScale: CGFloat = 1,
          onInteraction: @escaping () -> Void = {}, onBackgroundTap: @escaping () -> Void = {},
-         tapSeeks: Bool = true) {
+         tapSeeks: Bool = true, clockOffset: Double = 0) {
         self.lyrics = lyrics
         self.player = player
         self.settings = settings
@@ -50,6 +52,7 @@ struct LyricsView: View {
         self.onInteraction = onInteraction
         self.onBackgroundTap = onBackgroundTap
         self.tapSeeks = tapSeeks
+        self.clockOffset = clockOffset
         _animator = State(initialValue: LyricsAnimator(lyrics: lyrics, simple: settings.simpleLyricsMode))
     }
 
@@ -106,10 +109,15 @@ struct LyricsView: View {
                     TimelineView(.animation(minimumInterval: frameInterval)) { _ in
                         let now = MediaClock.now()
                         let _ = settings.showLyricsFPS ? frameCounter.tick(now) : ()
-                        let _ = animator.step(position: player.position(at: now), now: now,
+                        let _ = animator.step(position: player.position(at: now) + clockOffset, now: now,
                                               blurEnabled: settings.blurInactiveLines && !userScrolling && !reduced,
                                               frameInterval: frameInterval)
                         let focus = animator.focusIndex
+                        // Early scroll: the line the scroll follows is the one that starts shortly.
+                        let scrollFocus = settings.earlyScroll && shown.kind != .static && !animator.lyrics.lines.isEmpty
+                            ? LyricsAnimator.focus(in: animator.lyrics.lines,
+                                                   at: player.position(at: now) + clockOffset + settings.earlyScrollMs / 1000)
+                            : focus
                         let visuals = animator.visuals
 
                         let _ = culling.sync(CullingKey(typography: typography, topInset: topInset, bottomInset: bottomInset,
@@ -136,7 +144,7 @@ struct LyricsView: View {
                             guard inVisibleArea(point.y, viewport: geometry.size.height) else { return }
                             onBackgroundTap()
                         }
-                        .onChange(of: focus) { _, newFocus in
+                        .onChange(of: scrollFocus) { _, newFocus in
                             guard shown.kind != .static, !userScrolling, Date() >= resumeAutoScrollAt else { return }
                             // After a seek or a gap (back from the background or PiP) jump to the
                             // line: gliding across half the song would show it was ever behind.
@@ -152,7 +160,7 @@ struct LyricsView: View {
                         .onChange(of: player.snapToken) { _, _ in
                             animator.snapNext()
                             let now = MediaClock.now()
-                            animator.step(position: player.position(at: now), now: now,
+                            animator.step(position: player.position(at: now) + clockOffset, now: now,
                                           blurEnabled: settings.blurInactiveLines && !userScrolling && !reduced)
                             guard shown.kind != .static, !userScrolling else { return }
                             proxy.scrollTo(animator.focusIndex, anchor: anchor)
