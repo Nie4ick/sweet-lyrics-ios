@@ -161,6 +161,8 @@ final class AppSettings {
     var hiddenLyricsView: String { didSet { defaults.set(hiddenLyricsView, forKey: Keys.hiddenLyricsView) } }
     /// `NebulaColors.rawValue`: where the nebula takes its colours from.
     var nebulaColors: String { didSet { defaults.set(nebulaColors, forKey: Keys.nebulaColors) } }
+    /// Twinkling stars in the dark parts of the nebula.
+    var nebulaStars: Bool { didSet { defaults.set(nebulaStars, forKey: Keys.nebulaStars) } }
     // The TV (AirPlay screen mirroring or a cable): set up from the phone while it is connected.
     /// × the lyrics' size on the TV.
     var tvLyricsScale: Double { didSet { defaults.set(tvLyricsScale, forKey: Keys.tvLyricsScale) } }
@@ -211,6 +213,43 @@ final class AppSettings {
     /// Start scrolling to the next line a bit before it is sung.
     var earlyScroll: Bool { didSet { defaults.set(earlyScroll, forKey: Keys.earlyScroll) } }
     var earlyScrollMs: Double { didSet { defaults.set(earlyScrollMs, forKey: Keys.earlyScrollMs) } }
+    /// A tap on a line lands 300 ms before it, so the player's fade-in after a seek
+    /// doesn't swallow the first word (the extension's Seek Fade-in Compensation).
+    var seekFadeCompensation: Bool { didSet { defaults.set(seekFadeCompensation, forKey: Keys.seekFadeCompensation) } }
+    /// Days synced lyrics stay in the cache (1…30): kept longer, a song played again is there at once.
+    var syncedLyricsCacheDays: Double {
+        didSet { defaults.set(syncedLyricsCacheDays, forKey: Keys.syncedLyricsCacheDays) }
+    }
+    static let syncedLyricsCacheRange: ClosedRange<Double> = 1...30
+    /// The same, read off the main thread by the lyrics cache.
+    nonisolated static var syncedLyricsCacheDaysStored: Double {
+        let stored = UserDefaults.standard.object(forKey: Keys.syncedLyricsCacheDays) as? Double ?? 7
+        return min(max(stored, syncedLyricsCacheRange.lowerBound), syncedLyricsCacheRange.upperBound)
+    }
+    /// Smooth Scrolling: glide from line to line; off, the lyrics jump to the next line.
+    var smoothScrolling: Bool { didSet { defaults.set(smoothScrolling, forKey: Keys.smoothScrolling) } }
+    /// Duet Line Padding: each singer's lines lean toward their side, so duets read as two columns.
+    var duetLinePadding: Bool { didSet { defaults.set(duetLinePadding, forKey: Keys.duetLinePadding) } }
+    /// Join Split Words: a word sung in evenly paced parts is shown and filled as one word.
+    var joinSplitWords: Bool { didSet { defaults.set(joinSplitWords, forKey: Keys.joinSplitWords) } }
+    /// Minimal Lyrics Mode: lines fade out once sung, lines to come wait a little smaller.
+    var minimalLyricsMode: Bool { didSet { defaults.set(minimalLyricsMode, forKey: Keys.minimalLyricsMode) } }
+    /// In Minimal Lyrics Mode a line that ends while one above it is still sung stays, dimmed.
+    var keepOverlappingLines: Bool { didSet { defaults.set(keepOverlappingLines, forKey: Keys.keepOverlappingLines) } }
+    /// Experiment: background vocals stay tucked under their line until it's sung.
+    var backgroundLinePop: Bool { didSet { defaults.set(backgroundLinePop, forKey: Keys.backgroundLinePop) } }
+    /// Experiment: the refreshed Simple Lyrics Mode (one sweep along the line, floating words).
+    var refreshedSimpleLyrics: Bool { didSet { defaults.set(refreshedSimpleLyrics, forKey: Keys.refreshedSimpleLyrics) } }
+    /// What the cover background shows: the flowing cover, the still cover, the artist, the Canvas.
+    var backgroundStyle: String { didSet { defaults.set(backgroundStyle, forKey: Keys.backgroundStyle) } }
+    var background: BackgroundStyle {
+        let style = BackgroundStyle(rawValue: backgroundStyle) ?? .dynamic
+        return BackgroundStyle.offered.contains(style) ? style : .dynamic
+    }
+    /// Spicy Lyrics' "Refined Credits": quiet type under the last line instead of the old credit lines.
+    var refinedCredits: Bool { didSet { defaults.set(refinedCredits, forKey: Keys.refinedCredits) } }
+    /// A song ending on a duet line sung from the right keeps its credits on that side.
+    var creditsFollowLastLine: Bool { didSet { defaults.set(creditsFollowLastLine, forKey: Keys.creditsFollowLastLine) } }
     /// × the brightness of the translation under a line.
     var translationBrightness: Double { didSet { defaults.set(translationBrightness, forKey: Keys.translationBrightness) } }
     /// × the saturation of the cover behind the lyrics (app and PiP).
@@ -293,6 +332,7 @@ final class AppSettings {
             Keys.hiddenLyricsView: HiddenLyricsView.background.rawValue,
             Keys.artworkLyricLine: true,
             Keys.nebulaColors: NebulaColors.cover.rawValue,
+            Keys.nebulaStars: true,
             Keys.tvLyricsScale: 1.0,
             Keys.tvOffsetMs: 0.0,
             Keys.tvShowNowBar: true,
@@ -316,6 +356,18 @@ final class AppSettings {
             Keys.scrollSpeed: 1.0,
             Keys.earlyScroll: false,
             Keys.earlyScrollMs: 250.0,
+            Keys.refinedCredits: true,
+            Keys.joinSplitWords: false,
+            Keys.smoothScrolling: true,
+            Keys.syncedLyricsCacheDays: 7.0,
+            Keys.duetLinePadding: true,
+            Keys.minimalLyricsMode: false,
+            Keys.keepOverlappingLines: true,
+            Keys.backgroundLinePop: false,
+            Keys.refreshedSimpleLyrics: false,
+            Keys.backgroundStyle: BackgroundStyle.dynamic.rawValue,
+            Keys.seekFadeCompensation: true,
+            Keys.creditsFollowLastLine: false,
             Keys.translationBrightness: 1.0,
             Keys.backgroundSaturation: 1.0,
             Keys.lyricsFrameRate: 60.0,
@@ -376,6 +428,7 @@ final class AppSettings {
         hiddenLyricsView = defaults.string(forKey: Keys.hiddenLyricsView) ?? HiddenLyricsView.background.rawValue
         artworkLyricLine = defaults.bool(forKey: Keys.artworkLyricLine)
         nebulaColors = defaults.string(forKey: Keys.nebulaColors) ?? NebulaColors.cover.rawValue
+        nebulaStars = defaults.bool(forKey: Keys.nebulaStars)
         tvLyricsScale = defaults.double(forKey: Keys.tvLyricsScale)
         tvOffsetMs = defaults.double(forKey: Keys.tvOffsetMs)
         tvShowNowBar = defaults.bool(forKey: Keys.tvShowNowBar)
@@ -399,6 +452,20 @@ final class AppSettings {
         scrollSpeed = defaults.double(forKey: Keys.scrollSpeed)
         earlyScroll = defaults.bool(forKey: Keys.earlyScroll)
         earlyScrollMs = defaults.double(forKey: Keys.earlyScrollMs)
+        refinedCredits = defaults.bool(forKey: Keys.refinedCredits)
+        joinSplitWords = defaults.bool(forKey: Keys.joinSplitWords)
+        smoothScrolling = defaults.bool(forKey: Keys.smoothScrolling)
+        syncedLyricsCacheDays = Self.syncedLyricsCacheDaysStored
+        duetLinePadding = defaults.bool(forKey: Keys.duetLinePadding)
+        minimalLyricsMode = defaults.bool(forKey: Keys.minimalLyricsMode)
+        keepOverlappingLines = defaults.bool(forKey: Keys.keepOverlappingLines)
+        backgroundLinePop = defaults.bool(forKey: Keys.backgroundLinePop)
+        refreshedSimpleLyrics = defaults.bool(forKey: Keys.refreshedSimpleLyrics)
+        let storedStyle = BackgroundStyle(rawValue: defaults.string(forKey: Keys.backgroundStyle) ?? "") ?? .dynamic
+        // A style no longer offered (Canvas) goes back to the default, so Settings shows a choice.
+        backgroundStyle = (BackgroundStyle.offered.contains(storedStyle) ? storedStyle : .dynamic).rawValue
+        seekFadeCompensation = defaults.bool(forKey: Keys.seekFadeCompensation)
+        creditsFollowLastLine = defaults.bool(forKey: Keys.creditsFollowLastLine)
         translationBrightness = defaults.double(forKey: Keys.translationBrightness)
         backgroundSaturation = defaults.double(forKey: Keys.backgroundSaturation)
         lyricsFrameRate = defaults.double(forKey: Keys.lyricsFrameRate)
@@ -486,6 +553,14 @@ final class AppSettings {
         scrollSpeed = 1
         earlyScroll = false
         earlyScrollMs = 250
+        refinedCredits = true
+        joinSplitWords = false
+        smoothScrolling = true
+        duetLinePadding = true
+        minimalLyricsMode = false
+        keepOverlappingLines = true
+        seekFadeCompensation = true
+        creditsFollowLastLine = false
     }
 
     /// The translation's own look (its page in settings).
@@ -510,6 +585,7 @@ final class AppSettings {
 
     func resetEffects() {
         simpleLyricsMode = false
+        refreshedSimpleLyrics = false
         blurInactiveLines = true
         blurStrength = 1
         glowStrength = 1
@@ -518,6 +594,7 @@ final class AppSettings {
 
     func resetBackground() {
         dynamicBackground = true
+        backgroundStyle = BackgroundStyle.dynamic.rawValue
         backgroundDim = Self.defaultBackgroundDim
         backgroundSpeed = 1
         backgroundBlur = 1
@@ -546,7 +623,8 @@ final class AppSettings {
         static let crossfadeSeconds = "crossfadeSeconds"
         static let appleMusicAutoMix = "appleMusicAutoMix"
         static let transitionMode = "transitionMode"
-        static let transitionDetection = "transitionDetection.v1"
+        /// v2: v1 learned crossfades that were only the start lead (`holdPreviousLyrics`).
+        static let transitionDetection = "transitionDetection.v2"
         static let clientID = "spotifyClientID"
         static let spicyKey = "spicyLyricsKey"
         static let offset = "timingOffsetMs"
@@ -591,6 +669,7 @@ final class AppSettings {
         static let hiddenLyricsView = "hiddenLyricsView"
         static let artworkLyricLine = "artworkLyricLine"
         static let nebulaColors = "nebulaColors"
+        static let nebulaStars = "nebulaStars"
         static let tvLyricsScale = "tvLyricsScale"
         static let tvOffsetMs = "tvOffsetMs"
         static let tvShowNowBar = "tvShowNowBar"
@@ -616,6 +695,18 @@ final class AppSettings {
         static let scrollSpeed = "scrollSpeed"
         static let earlyScroll = "earlyScroll"
         static let earlyScrollMs = "earlyScrollMs"
+        static let refinedCredits = "refinedCredits"
+        static let joinSplitWords = "joinSplitWords"
+        static let smoothScrolling = "smoothScrolling"
+        static let syncedLyricsCacheDays = "syncedLyricsCacheDays"
+        static let duetLinePadding = "duetLinePadding"
+        static let minimalLyricsMode = "minimalLyricsMode"
+        static let keepOverlappingLines = "keepOverlappingLines"
+        static let backgroundLinePop = "backgroundLinePop"
+        static let refreshedSimpleLyrics = "refreshedSimpleLyrics"
+        static let backgroundStyle = "backgroundStyle"
+        static let seekFadeCompensation = "seekFadeCompensation"
+        static let creditsFollowLastLine = "creditsFollowLastLine"
         static let translationBrightness = "translationBrightness"
         static let backgroundSaturation = "backgroundSaturation"
         static let lyricsFrameRate = "lyricsFrameRate"
@@ -652,6 +743,33 @@ enum HiddenLyricsView: String, CaseIterable, Identifiable {
 }
 
 /// What flows behind the big cover.
+/// The extension's background styles that make sense on a phone (`BackgroundStyle` in stores.ts).
+enum BackgroundStyle: String, CaseIterable, Identifiable {
+    /// The cover flowing like liquid (Kawarp).
+    case dynamic
+    /// The cover, blurred and still.
+    case cover
+    /// The artist's photo, or the cover when there's none.
+    case artist
+    /// The song's Spotify Canvas video, or the flowing cover when it has none.
+    case canvas
+
+    var id: String { rawValue }
+
+    /// What Settings offers. Canvas is held back for now: Spotify's canvaz-cache doesn't take
+    /// this app's sign-in, so it would only ever show the flowing cover.
+    static let offered: [BackgroundStyle] = [.dynamic, .cover, .artist]
+
+    var title: String {
+        switch self {
+        case .dynamic: return String(localized: "Живая обложка")
+        case .cover: return String(localized: "Обложка")
+        case .artist: return String(localized: "Фото артиста")
+        case .canvas: return "Canvas"
+        }
+    }
+}
+
 enum ArtworkBackground: String, CaseIterable, Identifiable {
     /// The nebula.
     case nebula
@@ -664,6 +782,25 @@ enum ArtworkBackground: String, CaseIterable, Identifiable {
         switch self {
         case .nebula: return String(localized: "Туманность")
         case .background: return String(localized: "Как у текста")
+        }
+    }
+}
+
+/// What flows behind the lyrics on the TV.
+enum TVBackground: String, CaseIterable, Identifiable {
+    /// The cover, like behind the lyrics on the phone.
+    case cover
+    case nebula
+    /// Plain black: nothing moving.
+    case black
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .cover: return String(localized: "Обложка")
+        case .nebula: return String(localized: "Туманность")
+        case .black: return String(localized: "Чёрный")
         }
     }
 }
@@ -747,25 +884,6 @@ enum LyricsWeight: String, CaseIterable, Identifiable {
         case .bold: return .bold
         case .heavy: return .heavy
         case .black: return .black
-        }
-    }
-}
-
-/// What flows behind the lyrics on the TV.
-enum TVBackground: String, CaseIterable, Identifiable {
-    /// The cover, like behind the lyrics on the phone.
-    case cover
-    case nebula
-    /// Plain black: nothing moving.
-    case black
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .cover: return String(localized: "Обложка")
-        case .nebula: return String(localized: "Туманность")
-        case .black: return String(localized: "Чёрный")
         }
     }
 }

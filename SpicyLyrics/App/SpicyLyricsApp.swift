@@ -98,6 +98,7 @@ struct RootView: View {
             if phase == .active, old != .active {
                 player.resync("app active")
                 Task {
+                    await RemoteConfig.shared.refresh()
                     await updates.check()
                     await ReportService.shared.refreshThreads()
                 }

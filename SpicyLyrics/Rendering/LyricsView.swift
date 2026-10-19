@@ -21,8 +21,10 @@ struct LyricsView: View {
     /// Tapping a line seeks to it. Off while the controls are hidden: the first tap only brings
     /// them back, so reaching the buttons from full-screen lyrics never rewinds the song.
     var tapSeeks = true
-    /// Seconds added to the TV lyric clock to compensate for picture delay.
+    /// Seconds added to the clock (the TV shows its picture later than the sound plays).
     var clockOffset: Double = 0
+    /// At most 30 fps (the phone is warm).
+    var lowFrameRate = false
 
     @State private var animator: LyricsAnimator
     @State private var userScrolling = false
@@ -35,12 +37,16 @@ struct LyricsView: View {
     @State private var frameCounter = FrameRateCounter()
     /// Which lines are far enough off screen to skip drawing.
     @State private var culling = LineCulling()
+    /// The line held down: its actions show in a dialog outside the per-frame timeline. A
+    /// context menu on the line itself was rebuilt every frame, and its buttons did nothing.
+    @State private var menuLine: PreparedLine?
+    @State private var menuTick = 0
 
     init(lyrics: PreparedLyrics, player: PlayerModel, settings: AppSettings,
          topInset: CGFloat = 0, bottomInset: CGFloat = 0, horizontalPadding: CGFloat = 24,
          reduced: Bool = false, fontScale: CGFloat = 1,
          onInteraction: @escaping () -> Void = {}, onBackgroundTap: @escaping () -> Void = {},
-         tapSeeks: Bool = true, clockOffset: Double = 0) {
+         tapSeeks: Bool = true, clockOffset: Double = 0, lowFrameRate: Bool = false) {
         self.lyrics = lyrics
         self.player = player
         self.settings = settings
@@ -53,7 +59,16 @@ struct LyricsView: View {
         self.onBackgroundTap = onBackgroundTap
         self.tapSeeks = tapSeeks
         self.clockOffset = clockOffset
-        _animator = State(initialValue: LyricsAnimator(lyrics: lyrics, simple: settings.simpleLyricsMode))
+        self.lowFrameRate = lowFrameRate
+        _animator = State(initialValue: LyricsAnimator(lyrics: lyrics, simple: settings.simpleLyricsMode,
+                                                       minimal: settings.minimalLyricsMode,
+                                                       refreshed: settings.refreshedSimpleLyrics))
+    }
+
+    private var animatorOptions: LyricsAnimator.Options {
+        LyricsAnimator.Options(keepOverlapping: settings.keepOverlappingLines,
+                               // Reduced motion: background vocals simply stay out.
+                               popOut: settings.backgroundLinePop && !UIAccessibility.isReduceMotionEnabled)
     }
 
     /// Always the animator's copy, so line indices and visuals can never disagree.
@@ -64,7 +79,7 @@ struct LyricsView: View {
             fontSize: clamp(CGFloat(settings.fontSize) * pinchScale, AppSettings.fontRange.lowerBound,
                             AppSettings.fontRange.upperBound) * fontScale,
             cqw: max(width, 1) / 100,
-            hasDuets: shown.lines.contains(where: \.oppositeAligned),
+            hasDuets: settings.duetLinePadding && shown.lines.contains(where: \.oppositeAligned),
             simple: settings.simpleLyricsMode,
             centered: settings.centerLyrics,
             font: LyricsFontChoice(stored: settings.lyricsFont),
@@ -74,7 +89,8 @@ struct LyricsView: View {
             lineSpacingScale: CGFloat(settings.lineSpacingScale),
             translationScale: CGFloat(settings.translationScale),
             translationBrightness: settings.translationBrightness,
-            weight: (LyricsWeight(rawValue: settings.lyricsWeight) ?? .bold).fontWeight
+            weight: (LyricsWeight(rawValue: settings.lyricsWeight) ?? .bold).fontWeight,
+            refreshed: animator.refreshed
         )
     }
 
@@ -95,9 +111,14 @@ struct LyricsView: View {
     private static let userScrollCooldown: TimeInterval = 0.75
 
     private var frameInterval: Double {
+        // Unsynced lyrics never move by themselves: a few frames a second notice a seek.
+        if shown.kind == .static { return 1.0 / 4 }
         if !player.isPlaying { return 1.0 / 15 }
-        let target = max(15, settings.lyricsFrameRate)
-        return 1 / (reduced ? min(30, target) : target)
+        var target = max(15, settings.lyricsFrameRate)
+        // Line by line, only a slow sweep moves between lines (the scroll is Core Animation's
+        // own, at the screen's rate): 30 fps looks the same and costs half.
+        if reduced || lowFrameRate || shown.kind == .line { target = min(30, target) }
+        return 1 / target
     }
 
     var body: some View {
@@ -111,7 +132,7 @@ struct LyricsView: View {
                         let _ = settings.showLyricsFPS ? frameCounter.tick(now) : ()
                         let _ = animator.step(position: player.position(at: now) + clockOffset, now: now,
                                               blurEnabled: settings.blurInactiveLines && !userScrolling && !reduced,
-                                              frameInterval: frameInterval)
+                                              frameInterval: frameInterval, options: animatorOptions)
                         let focus = animator.focusIndex
                         // Early scroll: the line the scroll follows is the one that starts shortly.
                         let scrollFocus = settings.earlyScroll && shown.kind != .static && !animator.lyrics.lines.isEmpty
@@ -123,15 +144,20 @@ struct LyricsView: View {
                         let _ = culling.sync(CullingKey(typography: typography, topInset: topInset, bottomInset: bottomInset,
                                                         translated: settings.translateLyrics && !settings.translationReplaces
                                                             ? player.translations.count : -1))
-                        LazyVStack(alignment: .leading, spacing: typography.lineSpacing) {
+                        // No spacing of its own: each row brings the gap above it (see `ownsGap`).
+                        LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(shown.lines) { line in
                                 row(line, visual: visuals[line.id], typography: typography, focus: focus,
                                     viewport: geometry.size.height)
                                     .id(line.id)
                             }
                             // Spicy Lyrics always credits the writers and whoever synced the lyrics.
-                            LyricsCreditsView(lyrics: shown, lyricSize: typography.fontSize)
-                                .padding(.top, typography.fontSize * 0.45)
+                            LyricsCreditsView(lyrics: shown, lyricSize: typography.fontSize,
+                                              refined: settings.refinedCredits,
+                                              followLastLine: settings.creditsFollowLastLine && !settings.centerLyrics,
+                                              allSung: shown.kind == .static
+                                                  || player.position(at: now) + clockOffset >= (shown.lines.last?.end ?? 0))
+                                .padding(.top, typography.lineSpacing)
                         }
                         .padding(.horizontal, horizontalPadding)
                         .padding(.vertical, geometry.size.height * 0.6)
@@ -148,7 +174,8 @@ struct LyricsView: View {
                             guard shown.kind != .static, !userScrolling, Date() >= resumeAutoScrollAt else { return }
                             // After a seek or a gap (back from the background or PiP) jump to the
                             // line: gliding across half the song would show it was ever behind.
-                            if animator.snapped {
+                            // Smooth Scrolling off: the lyrics jump to the line, like the extension's default.
+                            if animator.snapped || !settings.smoothScrolling {
                                 proxy.scrollTo(newFocus, anchor: anchor)
                             } else {
                                 withAnimation(scrollAnimation) {
@@ -161,7 +188,8 @@ struct LyricsView: View {
                             animator.snapNext()
                             let now = MediaClock.now()
                             animator.step(position: player.position(at: now) + clockOffset, now: now,
-                                          blurEnabled: settings.blurInactiveLines && !userScrolling && !reduced)
+                                          blurEnabled: settings.blurInactiveLines && !userScrolling && !reduced,
+                                          options: animatorOptions)
                             guard shown.kind != .static, !userScrolling else { return }
                             proxy.scrollTo(animator.focusIndex, anchor: anchor)
                         }
@@ -196,7 +224,7 @@ struct LyricsView: View {
                 }
                 .overlay(alignment: .topLeading) {
                     if settings.showLyricsFPS {
-                        FPSBadge(counter: frameCounter, target: player.isPlaying ? 1 / frameInterval : 15)
+                        FPSBadge(counter: frameCounter, target: 1 / frameInterval)
                             .padding(.top, topInset + 6)
                             .padding(.leading, horizontalPadding)
                     }
@@ -217,6 +245,20 @@ struct LyricsView: View {
                 }
             }
         }
+        .sensoryFeedback(.impact(weight: .medium), trigger: menuTick)
+        .confirmationDialog(menuTitle, isPresented: menuShown, titleVisibility: .visible, presenting: menuLine) { line in
+            lineActions(line)
+        }
+    }
+
+    private var menuShown: Binding<Bool> {
+        Binding(get: { menuLine != nil }, set: { if !$0 { menuLine = nil } })
+    }
+
+    /// The held line, shortened if it is long.
+    private var menuTitle: String {
+        let text = menuLine?.plainText ?? ""
+        return text.count > 80 ? String(text.prefix(80)) + "…" : text
     }
 
     /// The user started or stopped dragging the lyrics.
@@ -252,7 +294,7 @@ struct LyricsView: View {
 extension LyricsView {
     /// Lines this far (in screens) beyond the visible area are still drawn: a quick flick must not
     /// outrun them.
-    private static let cullMargin: CGFloat = 1.25
+    private static let cullMargin: CGFloat = 0.8
     /// The lines around the one being sung are always drawn.
     private static let alwaysDrawn = 3
 
@@ -273,7 +315,8 @@ extension LyricsView {
             } else {
                 LyricLineView(line: line, visual: visual, typography: typography,
                               translation: settings.translateLyrics && !settings.translationReplaces
-                                  ? player.translations[line.sourceText] : nil)
+                                  ? player.translations[line.sourceText] : nil,
+                              ownsGap: true)
                     .equatable()
                     .contentShape(Rectangle())
                     .onTapGesture(coordinateSpace: .scrollView) { point in
@@ -284,7 +327,12 @@ extension LyricsView {
                         resumeAutoScrollAt = .distantPast
                         player.seekLyrics(to: seekTarget(line))
                     }
-                    .contextMenu { lineMenu(line) }
+                    .onLongPressGesture(minimumDuration: 0.4) {
+                        guard !line.isInterlude else { return }
+                        onInteraction()
+                        menuTick += 1
+                        menuLine = line
+                    }
                     // Entirely under the header or the controls: nobody sees it, so it is not
                     // there for taps and long presses either (a scroll still passes through).
                     .allowsHitTesting(culling.isTouchable(line.id))
@@ -303,35 +351,54 @@ extension LyricsView {
 
     /// Where to seek so `line` lights up right away: its start, less the user's offset, plus the
     /// headphone delay the clock subtracts (else the line before stayed lit ~200 ms on AirPods).
+    /// The player fades audio in for about this long after a seek, so landing exactly on a
+    /// line's start swallows its first syllable on faster songs (Spicy Lyrics' `SeekToLineStart`).
+    private static let seekFadeCompensation: Double = 0.3
+
     private func seekTarget(_ line: PreparedLine) -> Double {
-        max(0, line.start - settings.timingOffsetMs / 1000 + player.appliedOutputLatency)
+        let lead = settings.seekFadeCompensation ? Self.seekFadeCompensation : 0
+        return max(0, line.start - lead - settings.timingOffsetMs / 1000 + player.appliedOutputLatency)
     }
 
-    /// Long press on a line.
+    /// Long press on a line: what can be done with it.
     @ViewBuilder
-    func lineMenu(_ line: PreparedLine) -> some View {
-        if !line.isInterlude {
-            if shown.kind != .static {
-                Button {
-                    player.seekLyrics(to: seekTarget(line))
-                } label: {
-                    Label(String(localized: "Перемотать сюда"), systemImage: "play.circle")
-                }
-            }
-            Button {
-                UIPasteboard.general.string = line.plainText
-            } label: {
-                Label(String(localized: "Скопировать строку"), systemImage: "doc.on.doc")
-            }
-            Button {
-                UIPasteboard.general.string = shown.lines.filter { !$0.isInterlude }.map(\.plainText).joined(separator: "\n")
-            } label: {
-                Label(String(localized: "Скопировать весь текст"), systemImage: "doc.on.doc.fill")
-            }
-            ShareLink(item: line.plainText) {
-                Label(String(localized: "Поделиться строкой"), systemImage: "square.and.arrow.up")
+    func lineActions(_ line: PreparedLine) -> some View {
+        if shown.kind != .static {
+            Button(String(localized: "Перемотать сюда")) {
+                resumeAutoScrollAt = .distantPast
+                player.seekLyrics(to: seekTarget(line))
             }
         }
+        Button(String(localized: "Скопировать строку")) {
+            UIPasteboard.general.string = line.plainText
+        }
+        Button(String(localized: "Скопировать весь текст")) {
+            UIPasteboard.general.string = shown.lines.filter { !$0.isInterlude }.map(\.plainText).joined(separator: "\n")
+        }
+        Button(String(localized: "Поделиться строкой")) {
+            ShareSheet.present(line.plainText)
+        }
+        Button(String(localized: "Отмена"), role: .cancel) {}
+    }
+}
+
+/// The system share sheet over whatever is on screen.
+enum ShareSheet {
+    @MainActor
+    static func present(_ text: String) {
+        let scene = UIApplication.shared.connectedScenes
+            .filter { $0.session.role == .windowApplication }
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        guard var top = scene?.keyWindow?.rootViewController else { return }
+        while let presented = top.presentedViewController { top = presented }
+        let sheet = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        // iPad: from the middle of the screen.
+        sheet.popoverPresentationController?.sourceView = top.view
+        sheet.popoverPresentationController?.sourceRect = CGRect(x: top.view.bounds.midX, y: top.view.bounds.midY,
+                                                                width: 0, height: 0)
+        sheet.popoverPresentationController?.permittedArrowDirections = []
+        top.present(sheet, animated: true)
     }
 }
 
@@ -495,20 +562,42 @@ private struct EdgeFade: View {
 private struct LyricsCreditsView: View {
     let lyrics: PreparedLyrics
     let lyricSize: CGFloat
+    /// The extension's "Refined Credits" experiment (on by default since 6.4).
+    var refined = true
+    /// "Credits Follow the Last Singer": a song ending on a duet line sung from the right.
+    var followLastLine = false
+    /// The refined credits stay dim, like a line still to come, until the last line is sung.
+    var allSung = true
 
     private var credits: LyricsCredits { lyrics.credits }
     /// A little larger than on desktop, for a phone screen (as the Android port does).
     private var small: CGFloat { max(12, lyricSize * 0.34 * 1.2) }
+    private var trailing: Bool {
+        followLastLine && (lyrics.lines.last { !$0.isInterlude && !$0.isBackground }?.oppositeAligned ?? false)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: lyricSize * 0.25) {
+        if refined {
+            let size = max(14, lyricSize * 0.34 * 1.2)
+            RefinedCreditsView(lyrics: lyrics, size: size, trailing: trailing)
+                .opacity(allSung ? 1 : 0.55)
+                .animation(.easeOut(duration: 0.4), value: allSung)
+                // Closer to the last line than the old lines: the song's footnote.
+                .padding(.top, size * 0.75)
+        } else {
+            legacy.padding(.top, lyricSize * 0.45)
+        }
+    }
+
+    private var legacy: some View {
+        VStack(alignment: trailing ? .trailing : .leading, spacing: lyricSize * 0.25) {
             if !lyrics.songwriters.isEmpty {
                 Text("Written by: " + lyrics.songwriters.joined(separator: ", "))
                     .font(.system(size: max(14, lyricSize * 0.47), weight: .semibold))
                     .foregroundStyle(.white.opacity(0.7))
             }
             if let provider = credits.providedBy {
-                Text("Provided by: " + provider)
+                Text("Provided by: " + provider + (credits.via.map { " Via " + $0 } ?? ""))
                     .font(.system(size: small, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.55))
             }
@@ -528,7 +617,112 @@ private struct LyricsCreditsView: View {
                 )
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(trailing ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: trailing ? .trailing : .leading)
+    }
+}
+
+/// Spicy Lyrics' refined credits (Mixed.css, `.Exp_RefinedCredits .SongCredits`): no box, the
+/// songwriters, then the source on a smaller second line, or for community lyrics "Community
+/// lyrics · Made by @maker · Uploaded by @uploader". Labels at 55% of white, names at 70%.
+private struct RefinedCreditsView: View {
+    let lyrics: PreparedLyrics
+    let size: CGFloat
+    let trailing: Bool
+    @Environment(\.openURL) private var openURL
+
+    private static let text = Color.white.opacity(0.7)
+    private static let muted = Color.white.opacity(0.55)
+
+    private var credits: LyricsCredits { lyrics.credits }
+    private var secondary: CGFloat { max(size * 0.86, 12) }
+    private var alignment: HorizontalAlignment { trailing ? .trailing : .leading }
+    /// Community lyrics name their source in the community line, so "Provided by" goes.
+    private var community: Bool {
+        credits.isCommunity == true && (credits.maker != nil || credits.uploader != nil)
+    }
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: size * 0.3) {
+            if !lyrics.songwriters.isEmpty {
+                (Text("Written by ").foregroundColor(Self.muted)
+                    + Text(lyrics.songwriters.joined(separator: ", ")).foregroundColor(Self.text))
+                    .font(.system(size: size, weight: .semibold))
+            }
+            if community {
+                communityLine
+            } else if let provider = credits.providedBy {
+                Text(providerLine(provider))
+                    .font(.system(size: secondary, weight: .medium))
+            }
+        }
+        .lineSpacing(size * 0.1)
+        .multilineTextAlignment(trailing ? .trailing : .leading)
+        // A footnote's measure, so a long list of songwriters doesn't run the full lyrics width.
+        .frame(maxWidth: size * 46, alignment: Alignment(horizontal: alignment, vertical: .center))
+        .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+    }
+
+    /// "Provided by Apple Music via lrc.red", only the source's link underlined.
+    private func providerLine(_ provider: String) -> AttributedString {
+        var line = AttributedString("Provided by " + provider)
+        line.swiftUI.foregroundColor = Self.muted
+        if let via = credits.via {
+            var label = AttributedString(" via ")
+            label.swiftUI.foregroundColor = Self.muted
+            var link = AttributedString(via)
+            link.swiftUI.foregroundColor = Self.text
+            if let url = credits.viaURL {
+                link.link = url
+                link.swiftUI.underlineStyle = Text.LineStyle(pattern: .solid, color: .white.opacity(0.7 * 0.35))
+            }
+            line += label + link
+        }
+        return line
+    }
+
+    /// Each person stays whole on one line; the dot before them separates, outside the link.
+    private var communityLine: some View {
+        FlowLayout(alignment: alignment, spacing: 0, rowSpacing: size * 0.3) {
+            Text("Community lyrics").foregroundColor(Self.muted)
+            if let maker = credits.maker {
+                person("Made by", maker)
+            }
+            if let uploader = credits.uploader {
+                person(credits.maker != nil ? "Uploaded by" : "Made by", uploader)
+            }
+        }
+        .font(.system(size: secondary, weight: .medium))
+    }
+
+    /// The dot, the role, the avatar, then the name; only the name reads as a link.
+    private func person(_ role: String, _ contributor: LyricsContributor) -> some View {
+        HStack(spacing: secondary * 0.3) {
+            Text("\u{00B7}").foregroundColor(Self.muted)
+                .padding(.horizontal, secondary * 0.15)
+            Text(role).foregroundColor(Self.muted)
+            if let avatar = contributor.avatarURL {
+                AsyncImage(url: avatar) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Color.white.opacity(0.1)
+                }
+                .frame(width: secondary * 1.15, height: secondary * 1.15)
+                .clipShape(Circle())
+                .opacity(0.85)
+            }
+            Text("@" + contributor.name)
+                .fontWeight(.semibold)
+                .foregroundColor(Self.text)
+                .underline(color: .white.opacity(0.7 * 0.35))
+        }
+        .fixedSize()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let url = contributor.profileURL { openURL(url) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(contributor.profileURL != nil ? .isLink : [])
     }
 }
 

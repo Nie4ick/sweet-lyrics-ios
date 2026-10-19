@@ -16,6 +16,10 @@ status change (nightly cron), so a thread still being talked in stays.
   has had translated costs no request upstream. Only uncached lines count against a network's limit (60 000
   characters an hour); over it, the cached lines still come back (`limited: true`). Lines nobody asked for in
   180 days are dropped by the nightly cron.
+- `GET /v1/config`: the app's remote config (`RemoteConfig.swift`): lyrics timeout, queue look-ahead, cache
+  lifetimes, a floor for Web API polling, and kill switches for auto reports and Canvas. The defaults live in
+  `CLIENT_CONFIG` in `src/index.js`; to change them for every install without a release, set the `CLIENT_CONFIG`
+  variable to JSON (merged over them), e.g. `{"minWebPollInterval": 5, "lookaheadDepth": 0}`.
 - `/admin`: the list, a report with its photos and log, answer, set the status, delete. HTTP Basic: any user name, the password
   is the `ADMIN_TOKEN` secret.
 

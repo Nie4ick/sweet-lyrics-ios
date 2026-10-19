@@ -10,82 +10,114 @@ struct SettingsView: View {
     @Environment(PerformanceMonitor.self) private var performance
     @Environment(UpdateChecker.self) private var updates
     @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    HStack(spacing: 10) {
-                        QuickTile(title: String(localized: "Экономия"), icon: "bolt.fill", tint: .yellow,
-                                  isOn: Binding(get: { settings.powerSaving }, set: { settings.powerSaving = $0 }))
-                        QuickTile(title: String(localized: "Фон"), icon: "photo.fill", tint: .indigo,
-                                  isOn: Binding(get: { settings.dynamicBackground }, set: { settings.dynamicBackground = $0 }))
-                        QuickTile(title: String(localized: "Перевод"), icon: "character.bubble.fill", tint: .blue,
-                                  isOn: Binding(get: { settings.translateLyrics }, set: { settings.translateLyrics = $0 }))
+                if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Section {
+                        HStack(spacing: 10) {
+                            QuickTile(title: String(localized: "Экономия"), icon: "bolt.fill", tint: .yellow,
+                                      isOn: Binding(get: { settings.powerSaving }, set: { settings.powerSaving = $0 }))
+                            QuickTile(title: String(localized: "Фон"), icon: "photo.fill", tint: .indigo,
+                                      isOn: Binding(get: { settings.dynamicBackground }, set: { settings.dynamicBackground = $0 }))
+                            QuickTile(title: String(localized: "Перевод"), icon: "character.bubble.fill", tint: .blue,
+                                      isOn: Binding(get: { settings.translateLyrics }, set: { settings.translateLyrics = $0 }))
+                        }
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                     }
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                }
 
-                Section(String(localized: "Вид текста")) {
-                    category(String(localized: "Тема"), "paintpalette.fill", .indigo,
-                             value: settings.appTheme.title) { ThemeSettings() }
-                    category(String(localized: "Текст"), "textformat.size", .purple,
-                             value: LyricsFontChoice(stored: settings.lyricsFont).title) { TextLookSettings() }
-                    category(String(localized: "Эффекты"), "sparkles", .pink,
-                             value: settings.simpleLyricsMode ? "Simple" : nil) { EffectsSettings() }
-                    category(String(localized: "Фон"), "photo.fill", .indigo,
-                             value: settings.dynamicBackground ? nil : String(localized: "Выкл.")) { BackgroundSettings() }
-                    category(String(localized: "Перевод и романизация"), "character.bubble.fill", .blue,
-                             value: translationSummary) { LanguageSettings() }
-                }
-
-                Section(String(localized: "Экран плеера")) {
-                    category(String(localized: "Интерфейс"), "rectangle.bottomhalf.inset.filled", .orange) { InterfaceSettings() }
-                    category(String(localized: "Горизонтальный режим"), "rectangle.landscape.rotate", .teal,
-                             value: settings.landscapeLyricsOnly ? String(localized: "Только текст") : nil) { LandscapeSettings() }
-                    category(String(localized: "Жесты"), "hand.draw.fill", .red,
-                             value: settings.gesturesEnabled ? String(localized: "Вкл.") : String(localized: "Выкл.")) { GestureSettings() }
-                    category(String(localized: "Картинка в картинке"), "pip.fill", .green,
-                             value: settings.autoPictureInPicture ? String(localized: "Авто") : nil) { PictureInPictureSettings() }
-                }
-
-                Section(String(localized: "Работа")) {
-                    category(String(localized: "Источник музыки"), "music.note", .pink,
-                             value: settings.playerChoice == .automatic
-                                 ? String(localized: "Авто") + " · " + settings.playbackSource.title
-                                 : settings.playerChoice.title) { MusicSourceSettings() }
-                    category(String(localized: "Синхронизация"), "timer", .cyan,
-                             value: settings.timingOffsetMs == 0 ? nil : String(localized: "\(Int(settings.timingOffsetMs)) мс")) { SyncSettings() }
-                    category(String(localized: "Батарея и нагрев"), "bolt.fill", .yellow,
-                             value: settings.powerSaving ? String(localized: "Экономия") : (performance.constrained ? String(localized: "Авто-экономия") : nil)) {
-                        PerformanceSettings()
+                    ForEach(SettingsGroup.allCases) { group in
+                        Section(group.title) {
+                            ForEach(group.pages) { page in
+                                category(page, value: summary(page))
+                            }
+                        }
                     }
-                    category(String(localized: "Журнал"), "list.bullet.rectangle.fill", .gray,
-                             value: settings.syncLogEnabled ? nil : String(localized: "Выкл.")) { SyncLogView() }
-                    category(String(localized: "Отчёты об ошибках"), "paperplane.fill", .mint,
-                             value: ReportService.shared.unreadCount > 0 ? String(localized: "Новый ответ")
-                                 : (settings.sendsReports ? String(localized: "Вкл.") : nil)) { ReportSettings() }
-                    category(String(localized: "Источники текстов"), "doc.text.fill", .brown) { SourceSettings() }
-                    if settings.playerChoice != .appleMusic {
-                        category("Spotify", "music.note", Color(red: 0.12, green: 0.84, blue: 0.38),
-                                 value: settings.hasValidClientID ? "…" + String(settings.spotifyClientID.suffix(4)) : String(localized: "Не настроен")) { SpotifySettings() }
-                    }
-                }
 
-                Section {
-                    category(String(localized: "О приложении"), "info.circle.fill", .gray,
-                             value: updates.latest.map { String(localized: "Есть \($0.version)") } ?? AppVersion.display) { AboutSettings() }
-                    if settings.showStarRow { starRow }
+                    Section {
+                        category(.about, value: summary(.about))
+                        if settings.showStarRow { starRow }
+                    }
+                } else {
+                    searchResults
                 }
             }
             .settingsPage()
             .navigationTitle(String(localized: "Настройки"))
             .navigationBarTitleDisplayMode(.large)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: String(localized: "Поиск в настройках"))
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(String(localized: "Готово")) { dismiss() }
                 }
+            }
+        }
+    }
+
+    /// How many experiments are switched on.
+    private var experimentsSummary: String? {
+        let changed = [settings.backgroundLinePop, settings.refreshedSimpleLyrics].filter { $0 }.count
+        return changed == 0 ? nil : String(localized: "Изменено: \(changed)")
+    }
+
+    /// The short value on the right of a page's row.
+    private func summary(_ page: SettingsPage) -> String? {
+        switch page {
+        case .fontAndLines: return LyricsFontChoice(stored: settings.lyricsFont).title
+        case .animation: return settings.simpleLyricsMode ? "Simple" : nil
+        case .scrolling: return settings.smoothScrolling ? nil : String(localized: "Без плавности")
+        case .translation: return translationSummary
+        case .credits: return nil
+        case .themeAndBackground:
+            return settings.dynamicBackground ? settings.appTheme.title : String(localized: "Выкл.")
+        case .playerScreen: return nil
+        case .noLyrics:
+            return AutoSkipMode(rawValue: settings.autoSkipMode).flatMap { $0 == .off ? nil : $0.title }
+        case .landscape: return settings.landscapeLyricsOnly ? String(localized: "Только текст") : nil
+        case .gestures: return settings.gesturesEnabled ? String(localized: "Вкл.") : String(localized: "Выкл.")
+        case .pictureInPicture: return settings.autoPictureInPicture ? String(localized: "Авто") : nil
+        case .musicSource: return settings.playbackSource.title
+        case .sync: return settings.timingOffsetMs == 0 ? nil : String(localized: "\(Int(settings.timingOffsetMs)) мс")
+        case .lyricsSources: return nil
+        case .performance:
+            return settings.powerSaving ? String(localized: "Экономия")
+                : (performance.constrained ? String(localized: "Авто-экономия") : nil)
+        case .experiments: return experimentsSummary
+        case .reports:
+            return ReportService.shared.unreadCount > 0 ? String(localized: "Новый ответ")
+                : (settings.sendsReports ? String(localized: "Вкл.") : nil)
+        case .about: return updates.latest.map { String(localized: "Есть \($0.version)") } ?? AppVersion.display
+        }
+    }
+
+    /// Every setting whose name, section or page has the query in it, under the page it is on.
+    private var searchResults: some View {
+        let hits = SettingsIndex.search(query)
+        return Section {
+            if hits.isEmpty {
+                Text(String(localized: "Ничего не нашлось"))
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.white.opacity(0.09))
+            }
+            ForEach(hits) { hit in
+                NavigationLink {
+                    SettingsDestination(page: hit.page)
+                } label: {
+                    HStack(spacing: 12) {
+                        categoryIcon(hit.page.icon, hit.page.color)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(hit.title)
+                            Text(hit.page.group.map { "\($0.title) → \(hit.page.title)" } ?? hit.page.title)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .listRowBackground(Color.white.opacity(0.09))
             }
         }
     }
@@ -99,17 +131,13 @@ struct SettingsView: View {
         }
     }
 
-    private func category<Destination: View>(_ title: String, _ icon: String, _ color: Color, value: String? = nil,
-                                              @ViewBuilder destination: @escaping () -> Destination) -> some View {
+    private func category(_ page: SettingsPage, value: String? = nil) -> some View {
         NavigationLink {
-            destination()
-                .settingsPage()
-                .navigationTitle(title)
-                .navigationBarTitleDisplayMode(.inline)
+            SettingsDestination(page: page)
         } label: {
             HStack(spacing: 12) {
-                categoryIcon(icon, color)
-                Text(title)
+                categoryIcon(page.icon, page.color)
+                Text(page.title)
                 Spacer(minLength: 8)
                 if let value {
                     Text(value)
@@ -243,7 +271,7 @@ private struct ResetSection: View {
 
 // MARK: - Pages
 
-private struct TextLookSettings: View {
+private struct FontLinesSettings: View {
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
@@ -278,21 +306,43 @@ private struct TextLookSettings: View {
             }
 
             Section {
+                Toggle(String(localized: "Склеивать слова из слогов"), isOn: $settings.joinSplitWords)
+                Toggle(String(localized: "Отступ дуэтов"), isOn: $settings.duetLinePadding)
+            } header: {
+                Text(String(localized: "Строки"))
+            } footer: {
+                Text(String(localized: "Слово, спетое по слогам, показывается одним словом, если слоги идут ровно. В дуэтах строки каждого исполнителя отступают к своей стороне, как две колонки."))
+            }
+
+            ResetSection(title: String(localized: "Вернуть как было")) { settings.resetLyricsLook() }
+        }
+    }
+}
+
+private struct ScrollSettings: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
+            Section {
                 SliderRow(title: String(localized: "Положение активной строки"), value: $settings.activeLinePosition,
                           range: 0.2...0.8, step: 0.05, format: Self.positionLabel)
-                SliderRow(title: String(localized: "Скорость прокрутки"), value: $settings.scrollSpeed, range: 0.5...3, step: 0.25)
+                Toggle(String(localized: "Плавная прокрутка"), isOn: $settings.smoothScrolling)
+                if settings.smoothScrolling {
+                    SliderRow(title: String(localized: "Скорость прокрутки"), value: $settings.scrollSpeed, range: 0.5...3, step: 0.25)
+                }
                 Toggle(String(localized: "Раннее пролистывание"), isOn: $settings.earlyScroll)
                 if settings.earlyScroll {
                     SliderRow(title: String(localized: "Время раннего пролистывания"), value: $settings.earlyScrollMs,
                               range: 0...1000, step: 50, format: { "\(Int($0)) ms" })
                 }
+                Toggle(String(localized: "Перемотка чуть раньше строки"), isOn: $settings.seekFadeCompensation)
             } header: {
                 Text(String(localized: "Прокрутка"))
             } footer: {
-                Text(String(localized: "Где держится строка, которую поют, и как быстро текст доезжает до следующей."))
+                Text(String(localized: "Где держится строка, которую поют, и как быстро текст доезжает до следующей. Тап по строке может перематывать на 300 мс раньше, чтобы плавное нарастание звука после перемотки не съедало первое слово: полезно для рэпа и быстрых песен."))
             }
-
-            ResetSection(title: String(localized: "Вернуть как было")) { settings.resetLyricsLook() }
         }
     }
 
@@ -300,6 +350,27 @@ private struct TextLookSettings: View {
         if abs(value - 0.5) < 0.01 { return String(localized: "По центру") }
         return value < 0.5 ? String(localized: "Выше на \(Int(((0.5 - value) * 100).rounded()))%")
                            : String(localized: "Ниже на \(Int(((value - 0.5) * 100).rounded()))%")
+    }
+}
+
+private struct CreditsSettings: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
+            Section {
+                Toggle(String(localized: "Новый вид титров"), isOn: $settings.refinedCredits)
+            } footer: {
+                Text(String(localized: "Авторы и источник текста под последней строкой: тихим шрифтом, без рамки, приглушены, пока последняя строка не спета. Для текстов от сообщества — кто сделал и кто загрузил. Выключите, чтобы вернуть прежние строки."))
+            }
+
+            Section {
+                Toggle(String(localized: "Титры за последним исполнителем"), isOn: $settings.creditsFollowLastLine)
+            } footer: {
+                Text(String(localized: "Если песня кончается дуэтной строкой справа, авторы и источник текста встают под неё."))
+            }
+        }
     }
 }
 
@@ -313,6 +384,15 @@ private struct EffectsSettings: View {
                 Toggle("Simple Lyrics Mode", isOn: $settings.simpleLyricsMode)
             } footer: {
                 Text(String(localized: "Спокойная анимация из оригинального расширения: слова не подпрыгивают и не светятся, заливка мягче."))
+            }
+
+            Section {
+                Toggle(String(localized: "Скрывать спетые строки"), isOn: $settings.minimalLyricsMode)
+                if settings.minimalLyricsMode {
+                    Toggle(String(localized: "Оставлять перекрывающиеся строки"), isOn: $settings.keepOverlappingLines)
+                }
+            } footer: {
+                Text(String(localized: "Спетые строки плавно исчезают, следующие ждут чуть меньше и тусклее (Minimal Lyrics Mode). Строка, которая кончилась, пока выше ещё поют (бэк-вокал, наложения), может остаться приглушённой."))
             }
 
             Section {
@@ -351,6 +431,17 @@ private struct BackgroundSettings: View {
         @Bindable var settings = settings
         Form {
             Section {
+                NavigationLink {
+                    ThemeSettings()
+                        .settingsPage()
+                        .navigationTitle(String(localized: "Тема"))
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    LabeledContent(String(localized: "Тема"), value: settings.appTheme.title)
+                }
+            }
+
+            Section {
                 Toggle(String(localized: "Обложка на фоне"), isOn: $settings.dynamicBackground)
             } footer: {
                 if settings.powerSaving || performance.constrained {
@@ -361,8 +452,20 @@ private struct BackgroundSettings: View {
             }
 
             if settings.dynamicBackground {
+                Section {
+                    Picker(String(localized: "Что на фоне"), selection: $settings.backgroundStyle) {
+                        ForEach(BackgroundStyle.offered) { style in
+                            Text(style.title).tag(style.rawValue)
+                        }
+                    }
+                } footer: {
+                    Text(backgroundStyleNote)
+                }
+
                 Section(String(localized: "Обложка")) {
-                    SliderRow(title: String(localized: "Скорость движения"), value: $settings.backgroundSpeed, range: 0.25...3)
+                    if settings.background != .cover {
+                        SliderRow(title: String(localized: "Скорость движения"), value: $settings.backgroundSpeed, range: 0.25...3)
+                    }
                     SliderRow(title: String(localized: "Размытие"), value: $settings.backgroundBlur, range: 0.3...3)
                     SliderRow(title: String(localized: "Насыщенность цвета"), value: $settings.backgroundSaturation, range: 0...2)
                 }
@@ -375,6 +478,42 @@ private struct BackgroundSettings: View {
             }
 
             ResetSection(title: String(localized: "Вернуть фон по умолчанию")) { settings.resetBackground() }
+        }
+    }
+}
+
+extension BackgroundSettings {
+    fileprivate var backgroundStyleNote: String {
+        switch settings.background {
+        case .dynamic: return String(localized: "Размытая обложка медленно плавает за текстом.")
+        case .cover: return String(localized: "Размытая обложка стоит на месте. Меньше тратит батарею.")
+        case .artist: return String(localized: "Фото артиста из Spotify, размытое. Если фото нет, видна обложка.")
+        case .canvas: return String(localized: "Короткое видео песни из Spotify (Canvas), если оно есть, иначе живая обложка. Расходует больше трафика и батареи.")
+        }
+    }
+}
+
+/// Experiments, as the extension keeps them: new looks that can be switched back to the old one.
+private struct ExperimentsSettings: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
+            Section {
+                Toggle(String(localized: "Выезжающий бэк-вокал"), isOn: $settings.backgroundLinePop)
+            } footer: {
+                Text(String(localized: "Строки бэк-вокала спрятаны под своей строкой, пока её не начнут петь, потом выезжают из-под неё, а строки ниже расступаются. Когда обе спеты, бэк-вокал прячется обратно."))
+            }
+
+            Section {
+                Toggle(String(localized: "Обновлённый Simple Lyrics"), isOn: $settings.refreshedSimpleLyrics)
+                    .disabled(!settings.simpleLyricsMode)
+            } footer: {
+                Text(settings.simpleLyricsMode
+                     ? String(localized: "Заливка идёт по строке одним мягким краем, слова всплывают одно за другим, буквы коротких протяжных слов чуть раздуваются, расходятся и светятся. Строки стоят дальше друг от друга, точки в проигрышах заполняются по одной и медленно «дышат».")
+                     : String(localized: "Работает только с Simple Lyrics Mode (Текст → Анимация)."))
+            }
         }
     }
 }
@@ -510,6 +649,7 @@ private struct InterfaceSettings: View {
                             Text(colors.title).tag(colors.rawValue)
                         }
                     }
+                    Toggle(String(localized: "Звёзды в туманности"), isOn: $settings.nebulaStars)
                 }
             } header: {
                 Text(String(localized: "Большая обложка"))
@@ -664,6 +804,20 @@ private struct MusicSourceSettings: View {
             } footer: {
                 if settings.playerChoice == .automatic {
                     Text(String(localized: "Текст идёт за тем плеером, который сейчас играет. Если играют оба, побеждает тот, что на этом телефоне. Для Apple Music нужен доступ к медиатеке, для Spotify — вход."))
+                }
+            }
+            // With Apple Music in the picture its section below has the Spotify link too.
+            if settings.playerChoice == .spotify {
+                Section {
+                    NavigationLink {
+                        SpotifySettings()
+                            .settingsPage()
+                            .navigationTitle("Spotify")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        LabeledContent(String(localized: "Аккаунт Spotify"), value: settings.hasValidClientID
+                                       ? "…" + String(settings.spotifyClientID.suffix(4)) : String(localized: "Не настроен"))
+                    }
                 }
             }
             if settings.playerChoice != .spotify {
@@ -839,6 +993,19 @@ private struct SyncSettings: View {
             } footer: {
                 Text(String(localized: "При воспроизведении на этом iPhone можно вычитать задержку Bluetooth-наушников."))
             }
+
+            Section {
+                NavigationLink {
+                    SyncLogView()
+                        .settingsPage()
+                        .navigationTitle(String(localized: "Журнал"))
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    LabeledContent(String(localized: "Журнал"), value: settings.syncLogEnabled ? "" : String(localized: "Выкл."))
+                }
+            } footer: {
+                Text(String(localized: "Что приложение узнавало о песне и времени: пригодится, если текст отстаёт."))
+            }
         }
     }
 }
@@ -920,6 +1087,39 @@ private struct SourceSettings: View {
                 Text(String(localized: "С клиентским ключом используется публичный API /v1/lyrics. Без ключа приложение пробует токен Spotify, как расширение для Spicetify."))
             }
 
+            Section {
+                Picker(String(localized: "Хранить синхронизированные тексты"), selection: $settings.syncedLyricsCacheDays) {
+                    ForEach([1.0, 3, 7, 14, 30], id: \.self) { days in
+                        Text(String(localized: "\(Int(days)) дн.")).tag(days)
+                    }
+                }
+            } footer: {
+                Text(String(localized: "Сколько дней текст с таймингами лежит на телефоне: пока он там, песня открывается сразу и без интернета. Дольше — меньше запросов, но правки синхронизации в Spicy Lyrics приходят позже."))
+            }
+
+            Section {
+                Button(String(localized: "Свои тексты (TTML)")) { showOwnLyrics = true }
+                Button(String(localized: "Перезагрузить текст")) { player.loadLyrics(force: true) }
+                Button(cacheCleared ? String(localized: "Кэш очищен") : String(localized: "Очистить кэш текстов")) {
+                    player.clearLyricsCache()
+                    cacheCleared = true
+                }
+                .disabled(cacheCleared)
+            }
+        }
+        .sheet(isPresented: $showOwnLyrics) {
+            OwnLyricsView()
+                .environment(player)
+        }
+    }
+}
+
+private struct NoLyricsSettings: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
             if settings.playerChoice != .appleMusic {
                 Section {
                     Picker(String(localized: "Пропускать песни"), selection: $settings.autoSkipMode) {
@@ -950,20 +1150,6 @@ private struct SourceSettings: View {
                     Text(String(localized: "Большая обложка — во весь экран поверх туманности в цветах обложки, как в Apple Music: становится больше, когда кнопки прячутся, и чуть уменьшается на паузе. Туманность течёт, пока песня играет, и почти замирает на паузе."))
                 }
             }
-
-            Section {
-                Button(String(localized: "Свои тексты (TTML)")) { showOwnLyrics = true }
-                Button(String(localized: "Перезагрузить текст")) { player.loadLyrics(force: true) }
-                Button(cacheCleared ? String(localized: "Кэш очищен") : String(localized: "Очистить кэш текстов")) {
-                    player.clearLyricsCache()
-                    cacheCleared = true
-                }
-                .disabled(cacheCleared)
-            }
-        }
-        .sheet(isPresented: $showOwnLyrics) {
-            OwnLyricsView()
-                .environment(player)
         }
     }
 }
@@ -1075,5 +1261,41 @@ private struct AboutSettings: View {
             }
         }
         .foregroundStyle(.primary)
+    }
+}
+
+/// A settings page with its title, whether it is opened from the list or from search.
+struct SettingsDestination: View {
+    let page: SettingsPage
+
+    var body: some View {
+        content
+            .settingsPage()
+            .navigationTitle(page.title)
+            .navigationBarTitleDisplayMode(.inline)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch page {
+        case .fontAndLines: FontLinesSettings()
+        case .animation: EffectsSettings()
+        case .scrolling: ScrollSettings()
+        case .translation: LanguageSettings()
+        case .credits: CreditsSettings()
+        case .themeAndBackground: BackgroundSettings()
+        case .playerScreen: InterfaceSettings()
+        case .noLyrics: NoLyricsSettings()
+        case .landscape: LandscapeSettings()
+        case .gestures: GestureSettings()
+        case .pictureInPicture: PictureInPictureSettings()
+        case .musicSource: MusicSourceSettings()
+        case .sync: SyncSettings()
+        case .lyricsSources: SourceSettings()
+        case .performance: PerformanceSettings()
+        case .experiments: ExperimentsSettings()
+        case .reports: ReportSettings()
+        case .about: AboutSettings()
+        }
     }
 }

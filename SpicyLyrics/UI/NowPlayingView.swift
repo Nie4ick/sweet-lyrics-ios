@@ -40,8 +40,19 @@ struct NowPlayingView: View {
     #else
     @State private var artworkMode = false
     #endif
+    /// The small cover in the header grows into the big one and shrinks back into it.
+    @Namespace private var coverSpace
 
     private static let chromeAnimation = Animation.easeInOut(duration: 0.45)
+    /// The badges at the top of the lyrics each take a row of their own (a long sync badge ran
+    /// into the FPS one): FPS, then the sync badge, then any notice.
+    private static let badgeRow: CGFloat = 30
+    private var syncBadgeOffset: CGFloat { settings.showLyricsFPS ? Self.badgeRow : 0 }
+    private var fpsBadgeClearance: CGFloat {
+        syncBadgeOffset + (settings.showSyncIndicator ? Self.badgeRow : 0)
+    }
+    /// The small cover in the header.
+    private static let miniArtworkSide: CGFloat = 54
 
     var body: some View {
         GeometryReader { geometry in
@@ -63,6 +74,8 @@ struct NowPlayingView: View {
                 DynamicBackground(
                     image: settings.dynamicBackground ? player.backgroundArtwork : nil,
                     imageID: player.artworkID,
+                    artistImage: player.artistImage,
+                    canvasURL: player.canvasURL,
                     animated: settings.dynamicBackground && !reduced && !tvMode,
                     playing: player.isPlaying,
                     dim: settings.backgroundDim,
@@ -77,6 +90,7 @@ struct NowPlayingView: View {
                         // Less than half the background's darkening: the nebula should glow, the lines still read.
                         CoverVisualizerView(player: player, reduced: reduced, dim: settings.backgroundDim * 0.4,
                                             randomColors: settings.nebulaColors == NebulaColors.random.rawValue,
+                                            stars: settings.nebulaStars,
                                             frameCounter: settings.showLyricsFPS ? nebulaFrames : nil,
                                             maxFrameRate: Int(settings.lyricsFrameRate))
                             .allowsHitTesting(false)
@@ -102,7 +116,7 @@ struct NowPlayingView: View {
                         .environment(\.colorScheme, .dark)
                         .padding(.horizontal, 24)
                         .frame(maxHeight: .infinity, alignment: .top)
-                        .padding(.top, (chromeVisible && !landscape ? headerHeight : 0) + 8)
+                        .padding(.top, (chromeVisible && !landscape ? headerHeight : 0) + 8 + fpsBadgeClearance)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                         .allowsHitTesting(false)
                 }
@@ -187,6 +201,11 @@ struct NowPlayingView: View {
         }
         .onChange(of: settings.showRomanization) { _, _ in player.settingsChanged() }
         .onChange(of: settings.simpleLyricsMode) { _, _ in player.settingsChanged() }
+        .onChange(of: settings.joinSplitWords) { _, _ in player.settingsChanged() }
+        .onChange(of: settings.backgroundStyle) { _, _ in player.loadBackgroundVisuals() }
+        .onChange(of: settings.dynamicBackground) { _, _ in player.loadBackgroundVisuals() }
+        .onChange(of: settings.minimalLyricsMode) { _, _ in player.settingsChanged() }
+        .onChange(of: settings.refreshedSimpleLyrics) { _, _ in player.settingsChanged() }
         .onChange(of: settings.translationReplaces) { _, _ in player.settingsChanged() }
         .onChange(of: settings.translateLyrics) { _, _ in player.settingsChanged() }
         .modifier(LyricsTranslation(player: player, settings: settings))
@@ -309,6 +328,8 @@ struct NowPlayingView: View {
     private var lyricsHidden: Bool {
         switch player.lyricsState {
         case .notFound: return settings.hideNotFoundNotice
+        // Podcasts and ads only say there's nothing to show, like "not found"; errors keep their notice.
+        case .unavailable(let notice): return settings.hideNotFoundNotice && notice.isNoLyrics
         case .loaded(let lyrics): return settings.hideStaticLyrics && lyrics.kind == .static
         default: return false
         }
@@ -374,6 +395,12 @@ struct NowPlayingView: View {
 
     private func hideChrome() {
         withAnimation(Self.chromeAnimation) { chromeVisible = false }
+    }
+
+    /// The big cover in place of the lyrics, or back.
+    private func toggleArtworkMode() {
+        showChrome()
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.86)) { artworkMode.toggle() }
     }
 
     // MARK: Gestures & keyboard
@@ -552,10 +579,14 @@ struct NowPlayingView: View {
     /// Small artwork and title. Tap to pick a track, swipe sideways to skip.
     private var trackInfo: some View {
         HStack(spacing: 12) {
-            // The big cover is on screen: no need for the small one.
+            // The big cover is on screen: no need for the small one. A tap on it opens the big
+            // cover (the title next to it keeps opening the track list).
             if !bigArtworkShown {
-                artwork(side: 54, cornerRadius: 6)
-                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+                heroArtwork(side: Self.miniArtworkSide, cornerRadius: 6)
+                    .transition(.opacity)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel(String(localized: "Показать обложку"))
+                    .accessibilityAction { toggleArtworkMode() }
             }
             titleBlock
         }
@@ -563,9 +594,15 @@ struct NowPlayingView: View {
         .contentShape(Rectangle())
         .offset(x: headerSwipe)
         .opacity(1 - min(Double(abs(headerSwipe)) / 160, 0.6))
-        .onTapGesture {
-            showChrome()
-            if player.supportsSpotifyFeatures { showPicker = true }
+        // One tap for the whole row, sorted by where it lands: a tap of the cover's own lost to
+        // this one, so the small cover opened the track list instead of the big cover.
+        .onTapGesture(coordinateSpace: .local) { location in
+            if !bigArtworkShown, location.x <= Self.miniArtworkSide + 6 {
+                toggleArtworkMode()
+            } else {
+                showChrome()
+                if player.supportsSpotifyFeatures { showPicker = true }
+            }
         }
         .gesture(
             DragGesture(minimumDistance: 28)
@@ -603,18 +640,34 @@ struct NowPlayingView: View {
     }
 
     private func artwork(side: CGFloat, cornerRadius: CGFloat) -> some View {
+        artworkFill(cornerRadius: cornerRadius)
+            .frame(width: side, height: side)
+    }
+
+    /// The header's cover and the big one are the same view to SwiftUI: switching between them
+    /// flies the cover from one place to the other, growing or shrinking on the way.
+    private func heroArtwork(side: CGFloat, cornerRadius: CGFloat) -> some View {
+        artworkFill(cornerRadius: cornerRadius)
+            .matchedGeometryEffect(id: "cover", in: coverSpace)
+            .frame(width: side, height: side)
+    }
+
+    /// The cover filling whatever size it is offered.
+    private func artworkFill(cornerRadius: CGFloat) -> some View {
         Group {
             if let artwork = player.artwork {
                 Image(uiImage: artwork).resizable().scaledToFill()
             } else {
-                Image(systemName: "music.note")
-                    .font(.system(size: side * 0.35))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(.white.opacity(0.1))
+                GeometryReader { geometry in
+                    Image(systemName: "music.note")
+                        .font(.system(size: min(geometry.size.width, geometry.size.height) * 0.35))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                }
+                .background(.white.opacity(0.1))
             }
         }
-        .frame(width: side, height: side)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 
@@ -809,10 +862,12 @@ struct NowPlayingView: View {
             let blockTop = topInset + freeHeight / 2 - (side + gap + lineHeight) / 2
             ZStack(alignment: .topLeading) {
                 ZStack {
-                    artwork(side: side, cornerRadius: max(10, side * 0.035))
+                    artworkFill(cornerRadius: max(10, side * 0.035))
                         .id(player.artworkID)
                         .transition(.opacity)
                 }
+                .matchedGeometryEffect(id: "cover", in: coverSpace)
+                .frame(width: side, height: side)
                 .shadow(color: .black.opacity(0.4), radius: 30, y: 16)
                 .scaleEffect(player.isPlaying ? 1 : 0.88)
                 .position(x: geometry.size.width / 2, y: blockTop + side / 2)
@@ -844,7 +899,7 @@ struct NowPlayingView: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: Capsule())
-                        .padding(.top, topInset + 8)
+                        .padding(.top, topInset + 8 + fpsBadgeClearance)
                         .transition(.opacity)
                 }
             }
@@ -866,13 +921,14 @@ struct NowPlayingView: View {
                 horizontalPadding: horizontalPadding, reduced: reduced, fontScale: lyricFontScale,
                 onInteraction: { showChrome() },
                 onBackgroundTap: { toggleChrome() },
-                tapSeeks: chromeVisible || lyricsOnly
+                tapSeeks: chromeVisible || lyricsOnly,
+                lowFrameRate: performance.warm
             )
             .id(player.lyricsRevision)
             .overlay(alignment: .topTrailing) {
                 if settings.showSyncIndicator {
                     SyncIndicator()
-                        .padding(.top, topInset + 6)
+                        .padding(.top, topInset + 6 + syncBadgeOffset)
                         .padding(.trailing, horizontalPadding)
                 }
             }
@@ -882,15 +938,12 @@ struct NowPlayingView: View {
                 .padding(.top, topInset)
                 .frame(maxHeight: .infinity, alignment: .top)
         case .notFound:
-            message(icon: "text.badge.xmark", title: String(localized: "Текст не найден"),
-                    detail: settings.useLRCLibFallback || !player.supportsSpotifyFeatures
-                        ? String(localized: "Для этого трека пока нет текста ни в Spicy Lyrics, ни в LRCLIB.")
-                        : String(localized: "Для этого трека пока нет текста в Spicy Lyrics."),
-                    retry: true)
-        case .failed(let reason):
-            message(icon: "wifi.exclamationmark", title: String(localized: "Не удалось загрузить текст"), detail: reason, retry: true)
-        case .unavailable(let reason):
-            message(icon: "music.note", title: reason, detail: nil, retry: false)
+            LyricsNoticeView(notice: player.track?.isLocal == true ? .localTrack : .notFound,
+                             onOwnLyrics: { showOwnLyrics = true })
+        case .failed(let failure):
+            LyricsNoticeView(notice: failure.notice, failure: failure)
+        case .unavailable(let notice):
+            LyricsNoticeView(notice: notice)
         case .idle:
             idleState
         }
@@ -924,29 +977,6 @@ struct NowPlayingView: View {
                         .padding(.vertical, 10)
                         .background(.white.opacity(0.15), in: Capsule())
                 }
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func message(icon: String, title: String, detail: String?, retry: Bool) -> some View {
-        VStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.system(size: 40))
-            Text(title)
-                .font(.title3.weight(.semibold))
-                .multilineTextAlignment(.center)
-            if let detail {
-                Text(detail)
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .multilineTextAlignment(.center)
-            }
-            if retry {
-                Button(String(localized: "Повторить")) { player.loadLyrics(force: true) }
-                    .buttonStyle(.bordered)
             }
         }
         .foregroundStyle(.white)

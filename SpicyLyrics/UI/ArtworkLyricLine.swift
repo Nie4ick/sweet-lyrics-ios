@@ -69,18 +69,16 @@ struct ArtworkLyricLine: View {
         .allowsHitTesting(false)
     }
 
-    /// A lead line with its backing vocals under it.
+    /// A lead line with its backing vocals under it; in a duet, the other singer's line that
+    /// comes in over it as well, on its own side like in the full lyrics.
     private func block(_ index: Int, _ typography: LyricsTypography) -> some View {
         let lines = animator.lyrics.lines
         let visuals = animator.visuals
+        let rows = lines.indices.contains(index) ? Self.rows(of: index, in: lines) : []
         return VStack(alignment: .leading, spacing: 0) {
-            if lines.indices.contains(index) {
-                LyricLineView(line: Self.leftAligned(lines[index]), visual: visuals[index], typography: typography,
-                              translation: translation(lines[index]))
-                ForEach(Self.backing(of: index, in: lines), id: \.self) { row in
-                    LyricLineView(line: Self.leftAligned(lines[row]), visual: visuals[row], typography: typography,
-                                  translation: translation(lines[row]))
-                }
+            ForEach(rows, id: \.self) { row in
+                LyricLineView(line: lines[row], visual: visuals[row], typography: typography,
+                              translation: translation(lines[row]))
             }
         }
         .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
@@ -107,11 +105,25 @@ struct ArtworkLyricLine: View {
         return rows
     }
 
+    /// The lead line and its backing vocals, then the other singer's line if it starts before
+    /// this one ends (with its own backing vocals).
+    private static func rows(of lead: Int, in lines: [PreparedLine]) -> [Int] {
+        var rows = [lead] + backing(of: lead, in: lines)
+        let line = lines[lead]
+        guard !line.isInterlude,
+              let partner = lines.indices.dropFirst(lead + 1).first(where: { !lines[$0].isBackground }),
+              !lines[partner].isInterlude,
+              lines[partner].oppositeAligned != line.oppositeAligned,
+              lines[partner].start < line.end else { return rows }
+        rows += [partner] + backing(of: partner, in: lines)
+        return rows
+    }
+
     private func typography(width: CGFloat) -> LyricsTypography {
         LyricsTypography(
             fontSize: fontSize,
             cqw: max(width, 1) / 100,
-            hasDuets: false,
+            hasDuets: settings.duetLinePadding && animator.lyrics.lines.contains(where: \.oppositeAligned),
             simple: settings.simpleLyricsMode,
             centered: false,
             font: LyricsFontChoice(stored: settings.lyricsFont),
@@ -128,13 +140,6 @@ struct ArtworkLyricLine: View {
     private func translation(_ line: PreparedLine) -> String? {
         guard settings.translateLyrics, !settings.translationReplaces else { return nil }
         return player.translations[line.sourceText]
-    }
-
-    /// Duet lines lean right in the full lyrics; under the cover every line starts on the left.
-    private static func leftAligned(_ line: PreparedLine) -> PreparedLine {
-        var line = line
-        line.oppositeAligned = false
-        return line
     }
 }
 

@@ -13,8 +13,8 @@ final class PlayerModel {
         case loading
         case loaded(PreparedLyrics)
         case notFound
-        case unavailable(String)
-        case failed(String)
+        case unavailable(LyricsNotice)
+        case failed(LyricsFailure)
     }
 
     private(set) var content: PlaybackSnapshot.Content?
@@ -25,6 +25,15 @@ final class PlayerModel {
     /// Small copy of the artwork for the animated background.
     private(set) var backgroundArtwork: UIImage?
     private(set) var artworkID = ""
+    /// The first artist's photo, for the "Фото артиста" background (Spotify only).
+    private(set) var artistImage: UIImage?
+    /// The song's Canvas loop, for the "Canvas" background (Spotify only).
+    private(set) var canvasURL: URL?
+    @ObservationIgnored private var visualsTask: Task<Void, Never>?
+    /// Style and track the background visuals were loaded for.
+    @ObservationIgnored private var visualsKey = ""
+    @ObservationIgnored private var artistImages: [String: UIImage] = [:]
+    @ObservationIgnored private var canvasURLs: [String: URL?] = [:]
     /// Bumped whenever new lyrics are shown, so the lyrics view starts fresh.
     private(set) var lyricsRevision = 0
     private var currentLyricsState: LyricsState = .idle
@@ -63,6 +72,10 @@ final class PlayerModel {
     /// Album / playlist Spotify is playing from, used to keep context when picking a track.
     private(set) var contextURI: String?
     private(set) var deviceName: String?
+    /// The round trip to Spotify's Web API on this connection, rounded to 10 ms: the quickest of
+    /// the recent answers, i.e. the network itself without a busy server or phone on top.
+    private(set) var spotifyPing: Double?
+    @ObservationIgnored private var recentRoundTrips: [Double] = []
     var transientError: String?
 
     var track: TrackInfo? {
@@ -79,6 +92,19 @@ final class PlayerModel {
     @ObservationIgnored private var rawLyrics: LyricsDocument?
     @ObservationIgnored private var preparedRomanized = false
     @ObservationIgnored private var preparedSimple = false
+    /// The other display settings the current lyrics were prepared with.
+    @ObservationIgnored private var preparedShape = PreparedShape()
+
+    private struct PreparedShape: Equatable {
+        var joinSplit = false
+        var minimal = false
+        var refreshed = false
+    }
+
+    private var currentShape: PreparedShape {
+        PreparedShape(joinSplit: settings.joinSplitWords, minimal: settings.minimalLyricsMode,
+                      refreshed: settings.refreshedSimpleLyrics)
+    }
     /// Translations the shown lyrics were built with (replace mode), to rebuild only on change.
     @ObservationIgnored private var preparedReplacements: [String: String] = [:]
     /// Changes only when different lyrics arrive; translations belong to one revision of these.
@@ -180,11 +206,30 @@ final class PlayerModel {
     private static let aheadCount = 3
     /// App Remote answers in a few milliseconds, so a lead this big, again and again, is a real
     /// desync (a stall that was not a pause), not noise: fix it without waiting for an event.
-    private static let remoteAheadThreshold: Double = 0.15
-    private static let remoteAheadCount = 4
+    private static let remoteAheadThreshold: Double = 0.08
+    private static let remoteAheadCount = 3
     /// A normal round trip; anything slower (a stall, a refreshed token, a retried connection)
     /// makes the answer this much less certain, and only a fast answer may fine-tune the clock.
     private static let normalRoundTrip: Double = 0.3
+    /// How much slower than this connection's ping an answer may be and still count as normal.
+    private static let roundTripAllowance: Double = 0.15
+
+    /// A normal round trip on this connection: the fixed one on Wi-Fi, more on a slow mobile
+    /// network (with a 400 ms ping every answer used to count as slow, and the clock was never
+    /// corrected).
+    private var normalRoundTrip: Double {
+        max(Self.normalRoundTrip, (spotifyPing ?? 0) + Self.roundTripAllowance)
+    }
+
+    /// Remembers how long Spotify took to answer; the quickest of the last few is the ping.
+    private func notePing(_ roundTrip: Double) {
+        guard roundTrip > 0, roundTrip < 5 else { return }
+        recentRoundTrips.append(roundTrip)
+        if recentRoundTrips.count > 12 { recentRoundTrips.removeFirst() }
+        guard let quickest = recentRoundTrips.min() else { return }
+        let rounded = (quickest * 100).rounded() / 100
+        if spotifyPing != rounded { spotifyPing = rounded }
+    }
     /// App Remote answers slower than this went through a busy main thread: not trusted.
     private static let remoteMaxRoundTrip: Double = 0.25
     /// A song counts as freshly started when App Remote first reports it this early.
@@ -241,13 +286,20 @@ final class PlayerModel {
         endTransition()
         guard now >= manualChangeUntil, isPlaying, playing, case .track(let next) = incoming,
               let track, next.id != track.id, track.duration.isFinite, track.duration > 0 else { return false }
-        let remaining = track.duration - rawPosition(at: now)
+        // Measured on Spotify's own position: the start lead was taken off our clock, not off its.
+        // Measured on ours, the lead (0.3-0.9 s) looked like a crossfade, held the old lyrics,
+        // turned the next song's lead off (its lyrics ran early) and taught the detector a
+        // crossfade that was never set.
+        let remaining = track.duration - rawPosition(at: now) - (leadActive ? startLead : 0)
         let natural = transitionRun.allowsMeasurement(trackID: track.id, at: now)
         if natural {
             SyncLog.shared.add("transition", "natural change, remaining \(remaining.s3) s, new starts at \(startOffset.s3) s")
             settings.recordTransition(remaining: remaining, startOffset: startOffset)
         }
-        let observedOverlap = natural && remaining > 0.7 && remaining <= 14
+        // Known to be gapless: a second of clock error is no crossfade.
+        let gapless = settings.transitionMode == .automatic && settings.transitionEstimate.crossfadeSeconds == 0
+            && !settings.effectiveAutoMix
+        let observedOverlap = natural && remaining > (gapless ? 1.5 : 0.7) && remaining <= 14
         let hold: Double
         if settings.transitionMode == .automatic {
             // The first overlap is measurable even before there is an estimate.
@@ -461,6 +513,7 @@ final class PlayerModel {
             return
         }
         statusMessage = nil
+        notePing(roundTrip)
         contextURI = snapshot.contextURI
         deviceName = snapshot.deviceName
         // A "Smartphone" device is (almost always) this iPhone: its audio route delay applies.
@@ -586,7 +639,7 @@ final class PlayerModel {
                     decision = "frozen device, catch up → blend"
                 }
             }
-        } else if roundTrip > Self.normalRoundTrip * 2, abs(drift) < max(Self.resyncThreshold, roundTrip) {
+        } else if roundTrip > normalRoundTrip * 2, abs(drift) < max(Self.resyncThreshold, roundTrip) {
             // A slow answer (the phone lagged, a token was refreshed, the connection retried): its
             // position is off by up to half the round trip either way. Wait for a fast one. Even a
             // big drift is no proof while it is within that error: a 3 s answer once jumped the
@@ -601,7 +654,7 @@ final class PlayerModel {
             refineSamples = max(0, refineSamples - 1)
             decision = "kept clock"
             // Whatever a somewhat slow request adds to the uncertainty is not corrected for.
-            let slack = max(0, roundTrip - Self.normalRoundTrip) / 2
+            let slack = max(0, roundTrip - normalRoundTrip) / 2
             if drift > Self.resyncThreshold {
                 setClock(measured, at: now)
                 decision = "far behind → set"
@@ -1004,7 +1057,7 @@ final class PlayerModel {
             let remaining = duration - playbackPosition()
             if remaining > 0, remaining < 2 { return max(0.5, remaining + 0.3) }
         }
-        return settings.webPollInterval
+        return max(settings.webPollInterval, RemoteConfig.shared.values.minWebPollInterval)
     }
 
     func refreshNow() {
@@ -1285,10 +1338,12 @@ final class PlayerModel {
         #endif
         guard let current = track, pollTask != nil else { return }
         let skipping = AutoSkipMode(rawValue: settings.autoSkipMode).map { $0 != .off } ?? false
-        let depth = skipping ? 6 : 2
+        let config = RemoteConfig.shared.values
+        let depth = skipping ? config.lookaheadDepthSkipping : config.lookaheadDepth
+        guard depth > 0 else { return }
         lookaheadTask = Task { [weak self] in
             // The playing song's own requests go first.
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(config.lookaheadDelay))
             guard let self, !Task.isCancelled, self.track?.uri == current.uri,
                   let queue = try? await self.api.queue() else { return }
             let upcoming = queue.prefix(depth).compactMap(Self.trackInfo)
@@ -1298,7 +1353,7 @@ final class PlayerModel {
                 switch await self.lyrics.lyrics(for: info) {
                 case .found(let document): self.lookahead[info.id] = KnownLyrics(document)
                 case .notFound: self.lookahead[info.id] = KnownLyrics(nil)
-                case .failed: break
+                case .failed, .cancelled: break
                 }
             }
             if self.lookahead.count > 300 { self.lookahead.removeAll() }
@@ -1340,15 +1395,81 @@ final class PlayerModel {
             loadLyrics(force: false)
             lookAhead()
         case .episode:
-            lyricsState = .unavailable(String(localized: "Для подкастов тексты недоступны"))
+            lyricsState = .unavailable(.episode)
         case .ad:
-            lyricsState = .unavailable(String(localized: "Реклама"))
+            lyricsState = .unavailable(.ad)
         case .unknown:
-            lyricsState = .unavailable(String(localized: "Не удалось распознать трек"))
+            lyricsState = .unavailable(.unknownTrack)
         case .none:
             lyricsState = .idle
         }
         loadArtwork()
+        loadBackgroundVisuals()
+    }
+
+    /// The artist's photo or the Canvas when the background style asks for one. Each is looked up
+    /// once per track (and remembered), in the background; until then the cover shows.
+    func loadBackgroundVisuals() {
+        let style = settings.background
+        guard settings.dynamicBackground, supportsSpotifyFeatures,
+              style == .artist || (style == .canvas && RemoteConfig.shared.values.canvas),
+              case .track(let info) = content, !info.isLocal, !info.id.hasPrefix("am:")
+        else {
+            visualsTask?.cancel()
+            visualsKey = ""
+            if artistImage != nil { artistImage = nil }
+            if canvasURL != nil { canvasURL = nil }
+            return
+        }
+        let key = style.rawValue + "|" + info.id
+        guard key != visualsKey else { return }
+        visualsKey = key
+        visualsTask?.cancel()
+        let trackID = info.id, uri = info.uri
+        switch style {
+        case .artist:
+            if canvasURL != nil { canvasURL = nil }
+            if let cached = artistImages[trackID] {
+                artistImage = cached
+                return
+            }
+            artistImage = nil
+            visualsTask = Task { [weak self] in
+                guard let self else { return }
+                guard let url = try? await self.api.artistImageURL(trackID: trackID),
+                      let data = try? await URLSession.shared.data(from: url).0,
+                      let image = UIImage(data: data)?.downscaled(to: 720),
+                      !Task.isCancelled, self.visualsKey == key
+                else { return }
+                if self.artistImages.count > 40 { self.artistImages.removeAll() }
+                self.artistImages[trackID] = image
+                self.artistImage = image
+            }
+        case .canvas:
+            if artistImage != nil { artistImage = nil }
+            if let cached = canvasURLs[trackID] {
+                canvasURL = cached
+                return
+            }
+            canvasURL = nil
+            visualsTask = Task { [weak self] in
+                guard let self else { return }
+                let url: URL?
+                do {
+                    url = try await self.api.canvasURL(trackURI: uri)
+                } catch {
+                    SyncLog.log("canvas", "failed: \(error.localizedDescription)")
+                    return
+                }
+                guard !Task.isCancelled, self.visualsKey == key else { return }
+                if self.canvasURLs.count > 100 { self.canvasURLs.removeAll() }
+                self.canvasURLs[trackID] = url
+                self.canvasURL = url
+                SyncLog.log("canvas", url == nil ? "none for this song" : "found")
+            }
+        case .dynamic, .cover:
+            break
+        }
     }
 
     func loadLyrics(force: Bool) {
@@ -1374,11 +1495,11 @@ final class PlayerModel {
                 SyncLog.shared.add("lyrics", "not found")
                 self.lyricsState = .notFound
                 self.checkAutoSkip()
-            case .failed(let reason):
-                if reason != "cancelled" {
-                    SyncLog.shared.add("lyrics", "failed: \(reason)")
-                    self.lyricsState = .failed(reason)
-                }
+            case .failed(let failure):
+                SyncLog.shared.add("lyrics", "failed: \(failure.detail)")
+                self.lyricsState = .failed(failure)
+            case .cancelled:
+                break
             }
         }
     }
@@ -1448,17 +1569,20 @@ final class PlayerModel {
     private func prepare(_ document: LyricsDocument) {
         preparedRomanized = settings.showRomanization
         preparedSimple = settings.simpleLyricsMode
+        preparedShape = currentShape
         preparedReplacements = replacements
         lyricsRevision += 1
         lyricsState = .loaded(PreparedLyrics(document: document, romanized: preparedRomanized,
-                                             simple: preparedSimple, replacements: preparedReplacements))
+                                             simple: preparedSimple, joinSplit: preparedShape.joinSplit,
+                                             minimal: preparedShape.minimal, refreshed: preparedShape.refreshed,
+                                             replacements: preparedReplacements))
     }
 
     /// Re-prepares the current lyrics after a display setting (or a replacing translation) changed.
     func settingsChanged() {
         guard let rawLyrics,
               preparedRomanized != settings.showRomanization || preparedSimple != settings.simpleLyricsMode
-                || preparedReplacements != replacements
+                || preparedShape != currentShape || preparedReplacements != replacements
         else { return }
         prepare(rawLyrics)
     }

@@ -420,6 +420,10 @@ struct PiPStyle: Equatable {
     /// Lyric size multiplier for the window.
     var textScale: CGFloat = 1
     var weight: UIFont.Weight = .bold
+    /// Spicy Lyrics' refined credits (see `RefinedCreditsView`).
+    var refinedCredits = true
+    /// Duet Line Padding.
+    var duetPadding = true
 
     /// Same as the app's `LyricsTypography.opacity`.
     func opacity(_ value: Double) -> CGFloat {
@@ -485,6 +489,8 @@ struct PiPSnapshot: @unchecked Sendable {
             style.lineSpacing = CGFloat(settings.lineSpacingScale)
             style.translationScale = CGFloat(settings.translationScale)
             style.weight = (LyricsWeight(rawValue: settings.lyricsWeight) ?? .bold).uiWeight
+            style.refinedCredits = settings.refinedCredits
+            style.duetPadding = settings.duetLinePadding
             backgroundSaturation = settings.backgroundSaturation
         }
 
@@ -510,8 +516,10 @@ struct PiPSnapshot: @unchecked Sendable {
             message = String(localized: "Загрузка текста…")
         case .notFound:
             showWithoutLyrics(player, settings)
-        case .failed, .unavailable:
-            message = String(localized: "Текст недоступен")
+        case .failed(let failure):
+            message = failure.notice.title
+        case .unavailable(let notice):
+            message = notice.title
         case .idle:
             message = player.statusMessage ?? (player.supportsSpotifyFeatures ? String(localized: "Включите музыку в Spotify") : String(localized: "Включите музыку в Apple Music"))
         }
@@ -779,7 +787,7 @@ final class PiPFrameRenderer {
     private func buildRows(_ lyrics: PreparedLyrics, _ snapshot: PiPSnapshot, width column: CGFloat) {
         let style = snapshot.style
         let cqw = column / 100
-        let hasDuets = lyrics.lines.contains(where: \.oppositeAligned)
+        let hasDuets = style.duetPadding && lyrics.lines.contains(where: \.oppositeAligned)
         let size = leadSize
         let lead = ctFont(size, style.weight, style.design, family: style.family, face: style.postScriptName)
         let background = ctFont(size * 0.75, style.weight, style.design, family: style.family, face: style.postScriptName)
@@ -853,7 +861,9 @@ final class PiPFrameRenderer {
         }
         lastLyricEnd = lyrics.kind == .static ? 0 : lyrics.lines.map(\.end).max() ?? 0
         // Spicy Lyrics always credits the writers and the people who synced the lyrics.
-        credits = creditsLayout(lyrics, width: column - cqw * 5, design: style.design)
+        credits = style.refinedCredits
+            ? refinedCreditsLayout(lyrics, width: column - cqw * 5, design: style.design)
+            : creditsLayout(lyrics, width: column - cqw * 5, design: style.design)
     }
 
     /// The block after the last line, as in the app (`LyricsCreditsView`).
@@ -877,6 +887,36 @@ final class PiPFrameRenderer {
         if let uploader = credits.uploader {
             let role = credits.maker != nil ? "Uploaded by" : (credits.isCommunity == true ? "Made by" : "Submitted by")
             add(role + " @" + uploader.name, small, 0.7)
+        }
+        guard !blocks.isEmpty else { return nil }
+        return PiPTextLayout(blocks: blocks, width: max(1, width))
+    }
+
+    /// The refined credits, as in the app (`RefinedCreditsView`): the songwriters, then the
+    /// source or "Community lyrics · Made by @…" on a smaller, quieter line. One tone per line here.
+    private func refinedCreditsLayout(_ lyrics: PreparedLyrics, width: CGFloat,
+                                      design: UIFontDescriptor.SystemDesign) -> PiPTextLayout? {
+        let size = leadSize * 0.41
+        var blocks: [PiPTextBlock] = []
+        if !lyrics.songwriters.isEmpty {
+            blocks.append(PiPTextBlock(runs: ["Written by " + lyrics.songwriters.joined(separator: ", ")],
+                                       font: ctFont(size, .semibold, design), gray: 0.65))
+        }
+        let credits = lyrics.credits
+        var second: String?
+        if credits.isCommunity == true, credits.maker != nil || credits.uploader != nil {
+            var parts = ["Community lyrics"]
+            if let maker = credits.maker { parts.append("Made by @" + maker.name) }
+            if let uploader = credits.uploader {
+                parts.append((credits.maker != nil ? "Uploaded by @" : "Made by @") + uploader.name)
+            }
+            second = parts.joined(separator: " · ")
+        } else if let provider = credits.providedBy {
+            second = "Provided by " + provider + (credits.via.map { " via " + $0 } ?? "")
+        }
+        if let second {
+            blocks.append(PiPTextBlock(runs: [second], font: ctFont(size * 0.86, .medium, design), gray: 0.55,
+                                       spacing: blocks.isEmpty ? 0 : size * 0.3))
         }
         guard !blocks.isEmpty else { return nil }
         return PiPTextLayout(blocks: blocks, width: max(1, width))

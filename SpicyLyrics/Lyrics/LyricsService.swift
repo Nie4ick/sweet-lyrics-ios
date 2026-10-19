@@ -3,7 +3,8 @@ import Foundation
 enum LyricsLookupResult {
     case found(LyricsDocument)
     case notFound
-    case failed(String)
+    case failed(LyricsFailure)
+    case cancelled
 }
 
 /// Keeps source-specific caches while resolving online lyrics by metadata when needed.
@@ -31,7 +32,7 @@ final class LyricsService {
         spotify = SpotifyAPI(auth: auth)
         spotifyMatches = UserDefaults.standard.dictionary(forKey: Self.matchesKey) as? [String: String] ?? [:]
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForRequest = RemoteConfig.shared.values.lyricsTimeout
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         session = URLSession(configuration: config)
         let cache = cache
@@ -59,7 +60,8 @@ final class LyricsService {
             }
         }
 
-        var failures: [String] = []
+        /// Each source that failed, in the order asked; the first one's cause is the notice.
+        var failures: [(notice: LyricsNotice, line: String)] = []
         var confirmedInstrumental = false
 
         let appleMusic = track.id.hasPrefix("am:")
@@ -74,9 +76,9 @@ final class LyricsService {
                     }
                 }
             } catch is CancellationError {
-                return .failed("cancelled")
+                return .cancelled
             } catch {
-                failures.append("Spicy Lyrics: \(error.localizedDescription)")
+                failures.append((LyricsNotice.classify(error), "Spicy Lyrics: \(error.localizedDescription)"))
             }
         }
 
@@ -92,14 +94,14 @@ final class LyricsService {
                     break
                 }
             } catch is CancellationError {
-                return .failed("cancelled")
+                return .cancelled
             } catch {
                 // LRCLIB is only a fallback. When Spicy Lyrics already said "no lyrics", an LRCLIB
                 // outage (e.g. HTTP 503) is not a failure: say "not found" and don't cache a miss, so
                 // the next attempt asks again.
                 SyncLog.shared.add("lyrics", "LRCLIB unavailable: \(error.localizedDescription)")
                 if failures.isEmpty { return .notFound }
-                failures.append("LRCLIB: \(error.localizedDescription)")
+                failures.append((LyricsNotice.classify(error), "LRCLIB: \(error.localizedDescription)"))
             }
         }
 
@@ -108,7 +110,9 @@ final class LyricsService {
             Task.detached(priority: .utility) { cache.writeMiss(id) }
             return .notFound
         }
-        return .failed(failures.joined(separator: "\n"))
+        let first = failures[0]
+        return .failed(LyricsFailure(notice: first.notice, detail: failures.map(\.line).joined(separator: "\n"),
+                                     source: first.line.components(separatedBy: ":").first))
     }
 
     func clearCache() {
@@ -194,10 +198,18 @@ final class LyricsService {
 
     // MARK: Spicy Lyrics
 
-    private enum SpicyError: LocalizedError {
+    private enum SpicyError: LocalizedError, HTTPStatusError {
         case http(Int, String?)
         case unauthorized
         case malformed
+
+        var status: Int? {
+            switch self {
+            case .http(let code, _): return code
+            case .unauthorized: return 401
+            case .malformed: return nil
+            }
+        }
 
         var errorDescription: String? {
             switch self {
@@ -280,6 +292,12 @@ final class LyricsService {
             let (data, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard status == 200 else {
+                // The token may have just expired on Spotify's side: one more try on a fresh one,
+                // as the extension does since 6.3.
+                if status == 401, retry == 0 {
+                    token = try await auth.accessToken(forceRefresh: true)
+                    continue
+                }
                 if status == 401 || status == 403 { throw SpicyError.unauthorized }
                 throw SpicyError.http(status, Self.apiMessage(data))
             }
@@ -420,13 +438,19 @@ struct LyricsDiskCache {
                 try? FileManager.default.removeItem(at: file(id))
                 return nil
             }
-            let lifetime: TimeInterval = document.sourceName.hasPrefix("LRCLIB") ? 86_400 : Self.hitLifetime
+            let config = RemoteConfig.current
+            // Synced lyrics, from any source, are kept as long as the user chose.
+            let lifetime: TimeInterval = document.kind != .static
+                ? AppSettings.syncedLyricsCacheDaysStored * 86_400
+                : document.sourceName.hasPrefix("LRCLIB") ? config.lrclibCacheHours * 3600 : config.lyricsCacheDays * 86_400
             return age < lifetime ? .hit(document) : nil
         }
-        return age < 86_400 ? .miss : nil
+        return age < RemoteConfig.current.missCacheHours * 3600 ? .miss : nil
     }
 
-    private static let hitLifetime: TimeInterval = 7 * 86_400
+    private static var hitLifetime: TimeInterval {
+        max(7, RemoteConfig.current.lyricsCacheDays, AppSettings.syncedLyricsCacheDaysStored) * 86_400
+    }
 
     /// Deletes entries nothing would read any more, so the cache does not grow forever.
     func prune() {
