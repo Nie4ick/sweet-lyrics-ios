@@ -544,7 +544,10 @@ final class PlayerModel {
             // API's word and reconnect.
             var webURI: String?
             if case .track(let info) = snapshot.content { webURI = info.uri }
-            let remoteSong = trackChanged && webURI != remoteURI
+            // Spotify can expose different track URIs for the same recording through App Remote
+            // and the Web API (for example, market/availability variants). Do not let that
+            // disagreement alone evict a live App Remote session.
+            let remoteSong = trackChanged && webURI != remoteURI && !Self.sameRecording(content, snapshot.content)
             if now >= holdUntil, snapshot.isPlaying != isPlaying || remoteSong {
                 remoteDisagreements += 1
                 guard remoteDisagreements >= 2 else {
@@ -723,6 +726,21 @@ final class PlayerModel {
         case (.ad, .ad), (.unknown, .unknown): return true
         default: return false
         }
+    }
+
+    /// App Remote and the Web API may identify the same recording with different Spotify URIs
+    /// (track relinking). Same title and duration, and App Remote's single artist among the Web
+    /// API's full list, so similarly named tracks are not conflated.
+    private static func sameRecording(_ a: PlaybackSnapshot.Content?, _ b: PlaybackSnapshot.Content) -> Bool {
+        guard case .track(let x) = a, case .track(let y) = b, x.duration > 0, y.duration > 0 else { return false }
+        func same(_ l: String, _ r: String) -> Bool {
+            l.compare(r, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        let (fewer, more) = x.artists.count <= y.artists.count ? (x.artists, y.artists) : (y.artists, x.artists)
+        return same(x.title, y.title)
+            && abs(x.duration - y.duration) <= 2
+            && !fewer.isEmpty
+            && fewer.allSatisfy { name in more.contains { same(name, $0) } }
     }
 
     private static func shortID(_ content: PlaybackSnapshot.Content) -> String {
