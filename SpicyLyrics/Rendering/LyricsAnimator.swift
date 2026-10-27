@@ -457,7 +457,7 @@ final class LyricsAnimator {
 
         focusIndex = Self.focus(in: lyrics.lines, at: position)
         let leadIsActive = lyrics.lines.contains {
-            !$0.isBackground && !$0.isInterlude && ElementState(position, $0.start, $0.end) == .active
+            !$0.isBackground && !$0.isInterlude && ElementState(position, $0.start, $0.singingEnd) == .active
         }
         var previousActive = false
         // Minimal Lyrics Mode looks at the whole list: the first line being sung, and whether
@@ -633,7 +633,7 @@ final class LyricsAnimator {
         if enabled, let leadID = line.leadID, lyrics.lines.indices.contains(leadID) {
             let lead = lyrics.lines[leadID]
             let leadState = ElementState(lastPosition ?? 0, lead.start, lead.end)
-            open = leadState == .active || state == .active
+            open = leadState == .active || state == .active || focusIndex == line.id
             if !open, leadState == .sung, state == .sung, springs.revealOpen, focusIndex == leadID { open = true }
         }
         if open != springs.revealOpen {
@@ -728,7 +728,7 @@ final class LyricsAnimator {
         guard !lines.isEmpty else { return 0 }
         // A backing vocal takes focus when it is the only voice still singing.
         let activeVocals = lines.indices.filter {
-            !lines[$0].isInterlude && ElementState(time, lines[$0].start, lines[$0].end) == .active
+            !lines[$0].isInterlude && ElementState(time, lines[$0].start, lines[$0].singingEnd) == .active
         }
         if let background = activeVocals.first(where: { lines[$0].isBackground }),
            !activeVocals.contains(where: { !lines[$0].isBackground }) {
@@ -738,15 +738,15 @@ final class LyricsAnimator {
         // from timing rather than frame history so seeking into the gap behaves the same.
         if activeVocals.isEmpty,
            let lastVocal = lines.indices.filter({
-               !lines[$0].isInterlude && lines[$0].end <= time
-           }).max(by: { lines[$0].end < lines[$1].end }),
+               !lines[$0].isInterlude && lines[$0].singingEnd <= time
+           }).max(by: { lines[$0].singingEnd < lines[$1].singingEnd }),
            lines[lastVocal].isBackground,
            !lines.contains(where: {
-               !$0.isBackground && !$0.isInterlude && $0.start < lines[lastVocal].end
-                   && $0.end >= lines[lastVocal].end
+               !$0.isBackground && !$0.isInterlude && $0.start < lines[lastVocal].singingEnd
+                   && $0.singingEnd >= lines[lastVocal].singingEnd
            }),
            !lines.contains(where: {
-               $0.start >= lines[lastVocal].end && $0.start <= time
+               $0.start >= lines[lastVocal].singingEnd && $0.start <= time
            }) {
             return lastVocal
         }
@@ -767,7 +767,7 @@ final class LyricsAnimator {
             let previous = lines[index - 1]
             guard !previous.isInterlude, !previous.isBackground,
                   lines[index].start - previous.start <= duetWindow,
-                  ElementState(time, previous.start, previous.end) == .active
+                  ElementState(time, previous.start, previous.singingEnd) == .active
             else { break }
             index -= 1
         }

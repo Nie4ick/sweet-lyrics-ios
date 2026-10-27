@@ -74,7 +74,10 @@ struct ArtworkLyricLine: View {
     private func block(_ index: Int, _ typography: LyricsTypography) -> some View {
         let lines = animator.lyrics.lines
         let visuals = animator.visuals
-        let rows = lines.indices.contains(index) ? Self.rows(of: index, in: lines) : []
+        let lead = lines.indices.contains(index) && lines[index].isBackground
+            ? (lines[index].leadID ?? index)
+            : index
+        let rows = lines.indices.contains(lead) ? Self.rows(of: lead, in: lines) : []
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(rows, id: \.self) { row in
                 LyricLineView(line: lines[row], visual: visuals[row], typography: typography,
