@@ -42,6 +42,7 @@ struct SyllableVisual: Equatable {
 
 struct LineVisual: Equatable {
     var state: ElementState = .notSung
+    var soloBackground = false
     var opacity: Double = 0.51
     var blur: Double = 0
     /// Whole-line scale (line-synced lines grow to 1.05 while active).
@@ -455,6 +456,9 @@ final class LyricsAnimator {
         }
 
         focusIndex = Self.focus(in: lyrics.lines, at: position)
+        let leadIsActive = lyrics.lines.contains {
+            !$0.isBackground && !$0.isInterlude && ElementState(position, $0.start, $0.end) == .active
+        }
         var previousActive = false
         // Minimal Lyrics Mode looks at the whole list: the first line being sung, and whether
         // every line has been sung.
@@ -513,6 +517,7 @@ final class LyricsAnimator {
 
             var visual = visuals[index]
             visual.state = state
+            visual.soloBackground = line.isBackground && state == .active && !leadIsActive
             visual.blur = blur
             visual.rowScale = lineSprings.rowScale.update(to: targetRowScale, now: now, snap: jumped)
             if line.isBackground {
@@ -720,6 +725,15 @@ final class LyricsAnimator {
 
     /// The last line that has started (so the view stays on a line through short gaps).
     static func focus(in lines: [PreparedLine], at time: Double) -> Int {
+        guard !lines.isEmpty else { return 0 }
+        // A backing vocal takes focus when it is the only voice still singing.
+        let activeVocals = lines.indices.filter {
+            !lines[$0].isInterlude && ElementState(time, lines[$0].start, lines[$0].end) == .active
+        }
+        if let background = activeVocals.first(where: { lines[$0].isBackground }),
+           !activeVocals.contains(where: { !lines[$0].isBackground }) {
+            return background
+        }
         var low = 0, high = lines.count - 1, found = 0
         while low <= high {
             let mid = (low + high) / 2
@@ -730,7 +744,7 @@ final class LyricsAnimator {
                 high = mid - 1
             }
         }
-        // Background rows never hold focus: they belong to their lead line (`ResolveToLeadIndex`).
+        // While the lead sings, keep its backing rows attached to it.
         if lines[found].isBackground, let lead = lines[found].leadID { found = lead }
         // Prefer the first of several lines that start together (duets). Only lines that start
         // together count: a long earlier line that merely overlaps (a trailing backing vocal, a
