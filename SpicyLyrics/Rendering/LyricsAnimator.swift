@@ -734,6 +734,22 @@ final class LyricsAnimator {
            !activeVocals.contains(where: { !lines[$0].isBackground }) {
             return background
         }
+        // Keep a solo backing vocal in focus through the following silence. Resolve
+        // from timing rather than frame history so seeking into the gap behaves the same.
+        if activeVocals.isEmpty,
+           let lastVocal = lines.indices.filter({
+               !lines[$0].isInterlude && lines[$0].end <= time
+           }).max(by: { lines[$0].end < lines[$1].end }),
+           lines[lastVocal].isBackground,
+           !lines.contains(where: {
+               !$0.isBackground && !$0.isInterlude && $0.start < lines[lastVocal].end
+                   && $0.end >= lines[lastVocal].end
+           }),
+           !lines.contains(where: {
+               $0.start >= lines[lastVocal].end && $0.start <= time
+           }) {
+            return lastVocal
+        }
         var low = 0, high = lines.count - 1, found = 0
         while low <= high {
             let mid = (low + high) / 2
