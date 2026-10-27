@@ -750,16 +750,13 @@ final class LyricsAnimator {
            }) {
             return lastVocal
         }
-        var low = 0, high = lines.count - 1, found = 0
-        while low <= high {
-            let mid = (low + high) / 2
-            if lines[mid].start <= time {
-                found = mid
-                low = mid + 1
-            } else {
-                high = mid - 1
-            }
-        }
+        // Backing rows sit beside their parent, so the array is not necessarily
+        // ordered by start time. Prefer a singing lead before considering past rows.
+        let activeLeads = activeVocals.filter { !lines[$0].isBackground }
+        var found = activeLeads.max(by: { lines[$0].start < lines[$1].start })
+            ?? lines.indices.filter { lines[$0].start <= time }
+                .max(by: { lines[$0].start < lines[$1].start })
+            ?? 0
         // While the lead sings, keep its backing rows attached to it.
         if lines[found].isBackground, let lead = lines[found].leadID { found = lead }
         // Prefer the first of several lines that start together (duets). Only lines that start
