@@ -20,7 +20,7 @@ struct ArtworkLyricLine: View {
     @State private var animator: LyricsAnimator
     @State private var switcher = LineSwitcher()
     @State private var glide = FrameGlide()
-    @State private var vocalGlide = FrameGlide()
+    @State private var vocalFocus = VocalFocusState()
 
     init(lyrics: PreparedLyrics, player: PlayerModel, settings: AppSettings, fontSize: CGFloat = 24, frame: CGRect) {
         self.player = player
@@ -79,8 +79,9 @@ struct ArtworkLyricLine: View {
             ? (lines[index].leadID ?? index)
             : index
         let rows = lines.indices.contains(lead) ? Self.rows(of: lead, in: lines) : []
-        let focusedRow = rows.firstIndex(of: animator.focusIndex) ?? 0
-        return VocalFocusLayout(focusedRow: focusedRow, glide: vocalGlide) {
+        let focus = vocalFocus.resolve(group: lead, row: rows.firstIndex(of: animator.focusIndex),
+                                       current: switcher.current, previous: switcher.previous)
+        return VocalFocusLayout(focusedRow: focus.row, glide: focus.glide) {
             ForEach(rows, id: \.self) { row in
                 LyricLineView(line: lines[row], visual: visuals[row], typography: typography,
                               translation: translation(lines[row]))
@@ -147,6 +148,19 @@ struct ArtworkLyricLine: View {
     private func translation(_ line: PreparedLine) -> String? {
         guard settings.translateLyrics, !settings.translationReplaces else { return nil }
         return player.translations[line.sourceText]
+    }
+}
+
+/// Each group keeps its own offset, including while the outgoing group fades away.
+private final class VocalFocusState {
+    private var groups: [Int: (row: Int, glide: FrameGlide)] = [:]
+
+    func resolve(group: Int, row: Int?, current: Int?, previous: Int?) -> (row: Int, glide: FrameGlide) {
+        groups = groups.filter { $0.key == current || $0.key == previous }
+        var focus = groups[group] ?? (row: 0, glide: FrameGlide())
+        if let row { focus.row = row }
+        groups[group] = focus
+        return focus
     }
 }
 
